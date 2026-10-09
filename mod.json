@@ -1,0 +1,92 @@
+{
+  "geode": "5.10.1",
+  "gd": {
+    "android": "2.2081",
+    "win": "2.2081",
+    "mac": "2.2081",
+    "ios": "2.2081"
+  },
+  "id": "theryno.showtap",
+  "name": "Show Tap",
+  "version": "v1.1.0",
+  "developer": "Theryno",
+  "description": "Shows a fading dot at a configurable screen position whenever you tap, with adjustable size, opacity, and shakiness.",
+  "tags": [
+    "gameplay",
+    "visual",
+    "customization"
+  ],
+  "settings": {
+    "enabled": {
+      "name": "Enable Show Tap",
+      "type": "bool",
+      "default": true
+    },
+    "dot-size": {
+      "name": "Dot Size",
+      "description": "Dot radius in points.",
+      "type": "int",
+      "default": 10,
+      "min": 2,
+      "max": 40,
+      "control": {
+        "slider": true
+      }
+    },
+    "opacity": {
+      "name": "Dot Opacity (%)",
+      "description": "0 is invisible; 100 is fully visible.",
+      "type": "int",
+      "default": 75,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "x-position": {
+      "name": "X Position (%)",
+      "description": "Horizontal position: 0 is left, 100 is right.",
+      "type": "int",
+      "default": 80,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "y-position": {
+      "name": "Y Position (%)",
+      "description": "Vertical position: 0 is bottom, 100 is top. Default is slightly below center.",
+      "type": "int",
+      "default": 43,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "shakiness": {
+      "name": "Shakiness",
+      "description": "Maximum random offset around the configured X/Y position, in game points. 0 disables the offset.",
+      "type": "int",
+      "default": 5,
+      "min": 0,
+      "max": 80,
+      "control": {
+        "slider": true
+      }
+    },
+    "lifetime": {
+      "name": "Dot Lifetime (ms)",
+      "description": "How long each dot stays visible.",
+      "type": "int",
+      "default": 220,
+      "min": 50,
+      "max": 1500,
+      "control": {
+        "slider": true
+      }
+    }
+  }
+}
