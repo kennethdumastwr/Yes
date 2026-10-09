@@ -8,19 +8,54 @@
   },
   "id": "theryno.showtap",
   "name": "Show Tap",
-  "version": "v1.1.0",
+  "version": "v1.2.0",
   "developer": "Theryno",
-  "description": "Shows a fading dot at a configurable screen position whenever you tap, with adjustable size, opacity, and shakiness.",
-  "tags": [
-    "gameplay",
-    "visual",
-    "customization"
-  ],
+  "description": "Shows a dot at a configurable screen position while you hold the jump button. It appears on press and disappears on release.",
+  "tags": ["gameplay", "visual", "customization"],
   "settings": {
+    "general-section": {
+      "name": "General",
+      "type": "title"
+    },
     "enabled": {
       "name": "Enable Show Tap",
       "type": "bool",
       "default": true
+    },
+    "settings-button": {
+      "name": "Show settings button",
+      "description": "Adds a Show Tap button to the pause menu that opens this settings menu.",
+      "type": "bool",
+      "default": true
+    },
+    "behavior-section": {
+      "name": "Behavior",
+      "type": "title"
+    },
+    "only-on-jump": {
+      "name": "Only on jump",
+      "description": "Ignore left/right platformer buttons and only react to the jump button.",
+      "type": "bool",
+      "default": true
+    },
+    "show-everywhere": {
+      "name": "Show everywhere",
+      "description": "Also show the dot when you touch the screen outside of levels (menus, etc).",
+      "type": "bool",
+      "default": false
+    },
+    "fade-out": {
+      "name": "Release Fade (ms)",
+      "description": "How long the dot takes to shrink away after you release. 0 removes it instantly.",
+      "type": "int",
+      "default": 120,
+      "min": 0,
+      "max": 1000,
+      "control": { "slider": true }
+    },
+    "look-section": {
+      "name": "Dot Appearance",
+      "type": "title"
     },
     "dot-size": {
       "name": "Dot Size",
@@ -29,9 +64,7 @@
       "default": 10,
       "min": 2,
       "max": 40,
-      "control": {
-        "slider": true
-      }
+      "control": { "slider": true }
     },
     "opacity": {
       "name": "Dot Opacity (%)",
@@ -40,9 +73,11 @@
       "default": 75,
       "min": 0,
       "max": 100,
-      "control": {
-        "slider": true
-      }
+      "control": { "slider": true }
+    },
+    "position-section": {
+      "name": "Dot Position",
+      "type": "title"
     },
     "x-position": {
       "name": "X Position (%)",
@@ -51,9 +86,7 @@
       "default": 80,
       "min": 0,
       "max": 100,
-      "control": {
-        "slider": true
-      }
+      "control": { "slider": true }
     },
     "y-position": {
       "name": "Y Position (%)",
@@ -62,31 +95,16 @@
       "default": 43,
       "min": 0,
       "max": 100,
-      "control": {
-        "slider": true
-      }
+      "control": { "slider": true }
     },
     "shakiness": {
       "name": "Shakiness",
-      "description": "Maximum random offset around the configured X/Y position, in game points. 0 disables the offset.",
+      "description": "Maximum random offset around the X/Y position, in game points. 0 keeps the dot fixed.",
       "type": "int",
       "default": 5,
       "min": 0,
       "max": 80,
-      "control": {
-        "slider": true
-      }
-    },
-    "lifetime": {
-      "name": "Dot Lifetime (ms)",
-      "description": "How long each dot stays visible.",
-      "type": "int",
-      "default": 220,
-      "min": 50,
-      "max": 1500,
-      "control": {
-        "slider": true
-      }
+      "control": { "slider": true }
     }
   }
-}
+  }
