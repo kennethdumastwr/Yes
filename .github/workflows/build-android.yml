@@ -1,0 +1,19 @@
+name: Build Show Tap for Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-android64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Build Android 64-bit Geode mod
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          path: .
+          target: Android64
+          combine: true
