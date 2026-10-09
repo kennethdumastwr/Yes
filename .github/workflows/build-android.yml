@@ -11,9 +11,15 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
       - name: Build Android 64-bit Geode mod
+        id: build
         uses: geode-sdk/build-geode-mod@main
         with:
-          path: .
           target: Android64
-          combine: true
+
+      - name: Upload .geode file
+        uses: actions/upload-artifact@v4
+        with:
+          name: showtap-android64
+          path: ${{ steps.build.outputs.build-output }}
