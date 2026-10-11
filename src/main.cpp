@@ -25,9 +25,8 @@ namespace {
     bool isPaused() {
         auto scene = CCDirector::sharedDirector()->getRunningScene();
         if (!scene) return false;
-        CCObject* obj = nullptr;
-        CCARRAY_FOREACH(scene->getChildren(), obj) {
-            if (typeinfo_cast<PauseLayer*>(obj)) return true;
+        for (CCNode* child : scene->getChildrenExt()) {
+            if (typeinfo_cast<PauseLayer*>(child)) return true;
         }
         return false;
     }
