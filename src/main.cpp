@@ -21,6 +21,23 @@ namespace {
         return ((static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX)) * 2.f - 1.f) * maxOffset;
     }
 
+    // True while the pause menu is open on top of the current scene.
+    bool isPaused() {
+        auto scene = CCDirector::sharedDirector()->getRunningScene();
+        if (!scene) return false;
+        CCObject* obj = nullptr;
+        CCARRAY_FOREACH(scene->getChildren(), obj) {
+            if (typeinfo_cast<PauseLayer*>(obj)) return true;
+        }
+        return false;
+    }
+
+    // Inside a level (or an editor playtest) and not paused.
+    bool isPlayingLevel() {
+        if (!PlayLayer::get() && !LevelEditorLayer::get()) return false;
+        return !isPaused();
+    }
+
     // Called when the button / screen is pressed: dot appears and STAYS.
     void showDot() {
         auto mod = Mod::get();
@@ -30,7 +47,8 @@ namespace {
         auto scene = director ? director->getRunningScene() : nullptr;
         if (!scene) return;
 
-        // Already holding a dot in this scene (e.g. dual mode pushes twice).
+        // Already holding a dot in this scene (e.g. dual mode pushes twice,
+        // or a tap fires both a jump press and a screen touch).
         if (s_dot) {
             if (s_dot->getParent() == scene) return;
             s_dot = nullptr;
@@ -42,6 +60,7 @@ namespace {
         const float shake = static_cast<float>(mod->getSettingValue<int64_t>("shakiness"));
         const float xPercent = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
         const float yPercent = static_cast<float>(mod->getSettingValue<int64_t>("y-position"));
+        const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
         if (opacityPct <= 0.f || radius <= 0.f) return;
 
         // X/Y are percentages of the screen. Cocos origin is bottom-left.
@@ -66,7 +85,12 @@ namespace {
 
         auto dot = CCDrawNode::create();
         if (!dot) return;
-        ccColor4F color = {1.f, 1.f, 1.f, std::clamp(opacityPct / 100.f, 0.f, 1.f)};
+        ccColor4F color = {
+            rgb.r / 255.f,
+            rgb.g / 255.f,
+            rgb.b / 255.f,
+            std::clamp(opacityPct / 100.f, 0.f, 1.f)
+        };
         dot->drawDot(CCPointZero, radius, color);
         dot->setPosition(p);
         dot->setZOrder(999999);
@@ -94,10 +118,12 @@ namespace {
         ));
     }
 
-    bool shouldTrack(PlayerButton button) {
-        // Only react to real gameplay (level or editor playtest), not icon previews.
-        if (!PlayLayer::get() && !LevelEditorLayer::get()) return false;
-        if (Mod::get()->getSettingValue<bool>("only-on-jump") && button != PlayerButton::Jump) return false;
+    // Should a jump/left/right button PRESS show a dot?
+    bool shouldShowForButton(PlayerButton button) {
+        auto mod = Mod::get();
+        // "Only on jump" ON  -> jump only.  OFF -> jump + screen taps (taps handled below).
+        if (mod->getSettingValue<bool>("only-on-jump") && button != PlayerButton::Jump) return false;
+        if (mod->getSettingValue<bool>("only-when-playing") && !isPlayingLevel()) return false;
         return true;
     }
 }
@@ -106,26 +132,34 @@ namespace {
 class $modify(ShowTapPlayer, PlayerObject) {
     bool pushButton(PlayerButton button) {
         bool result = PlayerObject::pushButton(button);
-        if (shouldTrack(button)) showDot();
+        if (shouldShowForButton(button)) showDot();
         return result;
     }
 
     bool releaseButton(PlayerButton button) {
         bool result = PlayerObject::releaseButton(button);
-        if (shouldTrack(button)) hideDot();
+        // Always allow hiding so a dot can never get stuck.
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("only-on-jump") || button == PlayerButton::Jump) hideDot();
         return result;
     }
 };
 
-// Optional "Show Everywhere" mode: raw screen touches outside of levels (menus etc).
+// Screen taps. Only used when "Only on jump" is OFF.
 class $modify(ShowTapTouch, CCTouchDispatcher) {
     void touches(CCSet* set, CCEvent* event, unsigned int type) {
         CCTouchDispatcher::touches(set, event, type);
-        if (!set || PlayLayer::get()) return;
-        if (!Mod::get()->getSettingValue<bool>("show-everywhere")) return;
+        if (!set) return;
+
+        auto mod = Mod::get();
+        if (mod->getSettingValue<bool>("only-on-jump")) {
+            s_touchCount = 0;
+            return;
+        }
 
         const int n = static_cast<int>(set->count());
         if (type == 0) {            // began
+            if (mod->getSettingValue<bool>("only-when-playing") && !isPlayingLevel()) return;
             s_touchCount += n;
             showDot();
         } else if (type == 2 || type == 3) {   // ended / cancelled
