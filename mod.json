@@ -8,7 +8,7 @@
   },
   "id": "theryno.showtap",
   "name": "Show Tap",
-  "version": "v1.3.0",
+  "version": "v1.4.0",
   "developer": "Theryno",
   "description": "Shows a dot at a configurable screen position while you hold the jump button. It appears on press and disappears on release.",
   "tags": [
@@ -47,6 +47,18 @@
       "description": "ON: the dot only shows while you are playing a level (not in menus, and not while paused). OFF: it can also show in menus. Note: for taps in menus, turn Only on jump OFF.",
       "type": "bool",
       "default": true
+    },
+    "two-player-mode": {
+      "name": "Two-player mode dots",
+      "description": "In levels with 2-Player mode turned on: Player 1 shows a dot on the LEFT and Player 2 shows a dot on the RIGHT. The right dot uses your X/Y position below; the left dot uses the same Y with X mirrored (100 - X). In normal levels nothing changes.",
+      "type": "bool",
+      "default": true
+    },
+    "swap-players": {
+      "name": "Swap player sides",
+      "description": "Two-player mode only: puts Player 1 on the right and Player 2 on the left instead.",
+      "type": "bool",
+      "default": false
     },
     "fade-out": {
       "name": "Release Fade (ms)",
@@ -97,7 +109,7 @@
     },
     "x-position": {
       "name": "X Position (%)",
-      "description": "Horizontal position: 0 is left, 100 is right.",
+      "description": "Horizontal position: 0 is left, 100 is right. In two-player mode this is the RIGHT dot; the left dot is mirrored.",
       "type": "int",
       "default": 80,
       "min": 0,
