@@ -7,3 +7,5 @@ Shows a dot at a position you choose **while you hold the jump button**. It appe
 - Change the dot's color, size, opacity, position, shakiness and release fade.
 
 Open the settings from **Mods → Show Tap**, or with the **Show Tap** button on the pause screen.
+
+**Two-player mode:** in levels with 2-Player mode on, Player 1's presses show a dot on the left and Player 2's on the right (X position is mirrored for the left dot).
