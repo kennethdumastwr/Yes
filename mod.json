@@ -8,10 +8,14 @@
   },
   "id": "theryno.showtap",
   "name": "Show Tap",
-  "version": "v1.2.0",
+  "version": "v1.3.0",
   "developer": "Theryno",
   "description": "Shows a dot at a configurable screen position while you hold the jump button. It appears on press and disappears on release.",
-  "tags": ["gameplay", "visual", "customization"],
+  "tags": [
+    "gameplay",
+    "visual",
+    "customization"
+  ],
   "settings": {
     "general-section": {
       "name": "General",
@@ -34,15 +38,15 @@
     },
     "only-on-jump": {
       "name": "Only on jump",
-      "description": "Ignore left/right platformer buttons and only react to the jump button.",
+      "description": "ON: only the jump button shows the dot. OFF: both the jump button AND tapping the screen show the dot.",
       "type": "bool",
       "default": true
     },
-    "show-everywhere": {
-      "name": "Show everywhere",
-      "description": "Also show the dot when you touch the screen outside of levels (menus, etc).",
+    "only-when-playing": {
+      "name": "Only when playing",
+      "description": "ON: the dot only shows while you are playing a level (not in menus, and not while paused). OFF: it can also show in menus. Note: for taps in menus, turn Only on jump OFF.",
       "type": "bool",
-      "default": false
+      "default": true
     },
     "fade-out": {
       "name": "Release Fade (ms)",
@@ -51,11 +55,19 @@
       "default": 120,
       "min": 0,
       "max": 1000,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     },
     "look-section": {
       "name": "Dot Appearance",
       "type": "title"
+    },
+    "dot-color": {
+      "name": "Dot Color",
+      "description": "Color of the dot.",
+      "type": "color",
+      "default": "#FFFFFF"
     },
     "dot-size": {
       "name": "Dot Size",
@@ -64,7 +76,9 @@
       "default": 10,
       "min": 2,
       "max": 40,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     },
     "opacity": {
       "name": "Dot Opacity (%)",
@@ -73,7 +87,9 @@
       "default": 75,
       "min": 0,
       "max": 100,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     },
     "position-section": {
       "name": "Dot Position",
@@ -86,7 +102,9 @@
       "default": 80,
       "min": 0,
       "max": 100,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     },
     "y-position": {
       "name": "Y Position (%)",
@@ -95,7 +113,9 @@
       "default": 43,
       "min": 0,
       "max": 100,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     },
     "shakiness": {
       "name": "Shakiness",
@@ -104,7 +124,9 @@
       "default": 5,
       "min": 0,
       "max": 80,
-      "control": { "slider": true }
+      "control": {
+        "slider": true
+      }
     }
   }
-  }
+}
