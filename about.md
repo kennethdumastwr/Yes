@@ -1,11 +1,9 @@
 # Show Tap
 
-A lightweight Geometry Dash touch visualizer for mobile.
+Shows a dot at a position you choose **while you hold the jump button**. It appears when you press and disappears when you release.
 
-- **Enable Show Tap** toggles the effect.
-- **Dot Size** controls the dot radius.
-- **Transparency / Opacity** controls visibility.
-- **Shakiness** adds a random offset to each dot. Set it to `0` for exact placement.
-- **Dot Lifetime** controls how long the dot stays visible.
+- **Only on jump** ON: jump button only. OFF: jump button and screen taps.
+- **Only when playing**: ON limits the dot to playing a level (not menus or the pause screen).
+- Change the dot's color, size, opacity, position, shakiness and release fade.
 
-Dots are drawn over the active game scene and remove themselves after their lifetime. The mod is inspired by the interaction concept of click-sound mods, but it draws a visual indicator instead of playing audio.
+Open the settings from **Mods → Show Tap**, or with the **Show Tap** button on the pause screen.
