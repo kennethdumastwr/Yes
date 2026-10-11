@@ -4,16 +4,23 @@
 #include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 
 using namespace geode::prelude;
 
 namespace {
-    // The dot that is currently being held (null when nothing is pressed).
-    Ref<CCDrawNode> s_dot;
-    CCPoint s_lastDotPosition = CCPointZero;
-    bool s_hasLastDotPosition = false;
+    // Each slot is one dot that can be held independently.
+    enum Slot { SLOT_MAIN = 0, SLOT_LEFT = 1, SLOT_RIGHT = 2, SLOT_COUNT = 3 };
+
+    struct DotSlot {
+        Ref<CCDrawNode> dot;
+        CCPoint lastPos = CCPointZero;
+        bool hasLast = false;
+    };
+
+    std::array<DotSlot, SLOT_COUNT> s_slots;
     int s_touchCount = 0;
 
     float randomOffset(float maxOffset) {
@@ -37,8 +44,39 @@ namespace {
         return !isPaused();
     }
 
+    // True when the setting is on AND the current level has "2-Player mode" enabled.
+    bool twoPlayerActive() {
+        if (!Mod::get()->getSettingValue<bool>("two-player-mode")) return false;
+        GJBaseGameLayer* layer = nullptr;
+        if (auto pl = PlayLayer::get()) layer = pl;
+        else if (auto ed = LevelEditorLayer::get()) layer = ed;
+        if (!layer || !layer->m_levelSettings) return false;
+        return layer->m_levelSettings->m_twoPlayerMode;
+    }
+
+    // Which dot does this player's event control?
+    // Player 1 = left dot, Player 2 = right dot (unless swapped).
+    int slotFor(PlayerObject* player) {
+        if (!twoPlayerActive()) return SLOT_MAIN;
+        bool right = player->m_isSecondPlayer;
+        if (Mod::get()->getSettingValue<bool>("swap-players")) right = !right;
+        return right ? SLOT_RIGHT : SLOT_LEFT;
+    }
+
+    // Draws a real filled circle (drawDot was rendering as a square).
+    void drawCircle(CCDrawNode* node, float radius, const ccColor4F& color) {
+        constexpr int kSegments = 40;
+        constexpr float kPi = 3.14159265358979f;
+        CCPoint verts[kSegments];
+        for (int i = 0; i < kSegments; ++i) {
+            float a = (2.f * kPi * static_cast<float>(i)) / static_cast<float>(kSegments);
+            verts[i] = ccp(std::cos(a) * radius, std::sin(a) * radius);
+        }
+        node->drawPolygon(verts, kSegments, color, 0.f, ccc4f(0.f, 0.f, 0.f, 0.f));
+    }
+
     // Called when the button / screen is pressed: dot appears and STAYS.
-    void showDot() {
+    void showDot(int slotIndex) {
         auto mod = Mod::get();
         if (!mod->getSettingValue<bool>("enabled")) return;
 
@@ -46,21 +84,25 @@ namespace {
         auto scene = director ? director->getRunningScene() : nullptr;
         if (!scene) return;
 
-        // Already holding a dot in this scene (e.g. dual mode pushes twice,
-        // or a tap fires both a jump press and a screen touch).
-        if (s_dot) {
-            if (s_dot->getParent() == scene) return;
-            s_dot = nullptr;
+        auto& slot = s_slots[slotIndex];
+
+        // Already holding this dot in this scene.
+        if (slot.dot) {
+            if (slot.dot->getParent() == scene) return;
+            slot.dot = nullptr;
         }
 
         const auto winSize = director->getWinSize();
         const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
         const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
         const float shake = static_cast<float>(mod->getSettingValue<int64_t>("shakiness"));
-        const float xPercent = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
+        float xPercent = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
         const float yPercent = static_cast<float>(mod->getSettingValue<int64_t>("y-position"));
         const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
         if (opacityPct <= 0.f || radius <= 0.f) return;
+
+        // The left dot (Player 1 in two-player mode) is the mirrored X position.
+        if (slotIndex == SLOT_LEFT) xPercent = 100.f - xPercent;
 
         // X/Y are percentages of the screen. Cocos origin is bottom-left.
         CCPoint p = ccp(winSize.width * std::clamp(xPercent, 0.f, 100.f) / 100.f,
@@ -73,14 +115,14 @@ namespace {
             p.y = std::clamp(p.y, radius, std::max(radius, winSize.height - radius));
 
             // Avoid landing on the exact same spot as the previous tap.
-            if (s_hasLastDotPosition && std::abs(p.x - s_lastDotPosition.x) < 0.01f &&
-                std::abs(p.y - s_lastDotPosition.y) < 0.01f) {
+            if (slot.hasLast && std::abs(p.x - slot.lastPos.x) < 0.01f &&
+                std::abs(p.y - slot.lastPos.y) < 0.01f) {
                 p.x = std::clamp(p.x + std::max(1.f, shake * 0.1f), radius,
                                  std::max(radius, winSize.width - radius));
             }
         }
-        s_lastDotPosition = p;
-        s_hasLastDotPosition = true;
+        slot.lastPos = p;
+        slot.hasLast = true;
 
         auto dot = CCDrawNode::create();
         if (!dot) return;
@@ -90,18 +132,19 @@ namespace {
             rgb.b / 255.f,
             std::clamp(opacityPct / 100.f, 0.f, 1.f)
         };
-        dot->drawDot(CCPointZero, radius, color);
+        drawCircle(dot, radius, color);
         dot->setPosition(p);
         dot->setZOrder(999999);
         scene->addChild(dot);
-        s_dot = dot;
+        slot.dot = dot;
     }
 
     // Called when the button / screen is released: dot shrinks away and is removed.
-    void hideDot() {
-        if (!s_dot) return;
-        CCDrawNode* dot = s_dot.data();
-        s_dot = nullptr;
+    void hideDot(int slotIndex) {
+        auto& slot = s_slots[slotIndex];
+        if (!slot.dot) return;
+        CCDrawNode* dot = slot.dot.data();
+        slot.dot = nullptr;
         if (!dot->getParent()) return;
 
         const float fade = static_cast<float>(Mod::get()->getSettingValue<int64_t>("fade-out")) / 1000.f;
@@ -131,7 +174,7 @@ namespace {
 class $modify(ShowTapPlayer, PlayerObject) {
     bool pushButton(PlayerButton button) {
         bool result = PlayerObject::pushButton(button);
-        if (shouldShowForButton(button)) showDot();
+        if (shouldShowForButton(button)) showDot(slotFor(this));
         return result;
     }
 
@@ -139,7 +182,9 @@ class $modify(ShowTapPlayer, PlayerObject) {
         bool result = PlayerObject::releaseButton(button);
         // Always allow hiding so a dot can never get stuck.
         auto mod = Mod::get();
-        if (!mod->getSettingValue<bool>("only-on-jump") || button == PlayerButton::Jump) hideDot();
+        if (!mod->getSettingValue<bool>("only-on-jump") || button == PlayerButton::Jump) {
+            hideDot(slotFor(this));
+        }
         return result;
     }
 };
@@ -159,11 +204,13 @@ class $modify(ShowTapTouch, CCTouchDispatcher) {
         const int n = static_cast<int>(set->count());
         if (type == 0) {            // began
             if (mod->getSettingValue<bool>("only-when-playing") && !isPlayingLevel()) return;
+            // In 2-player levels the per-player button events draw the dots instead.
+            if (twoPlayerActive()) return;
             s_touchCount += n;
-            showDot();
+            showDot(SLOT_MAIN);
         } else if (type == 2 || type == 3) {   // ended / cancelled
             s_touchCount = std::max(0, s_touchCount - n);
-            if (s_touchCount == 0) hideDot();
+            if (s_touchCount == 0) hideDot(SLOT_MAIN);
         }
     }
 };
