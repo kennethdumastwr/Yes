@@ -8,7 +8,7 @@
   },
   "id": "theryno.showtap",
   "name": "Show Tap",
-  "version": "v1.4.0",
+  "version": "v1.4.1",
   "developer": "Theryno",
   "description": "Shows a dot at a configurable screen position while you hold the jump button. It appears on press and disappears on release.",
   "tags": [
@@ -60,9 +60,15 @@
       "type": "bool",
       "default": false
     },
+    "frame-perfect": {
+      "name": "Frame-Perfect Mode",
+      "description": "Dot appears and disappears on the exact frame of the jump press/release, with no animation. Turn off to use the Release Fade below.",
+      "type": "bool",
+      "default": true
+    },
     "fade-out": {
       "name": "Release Fade (ms)",
-      "description": "How long the dot takes to shrink away after you release. 0 removes it instantly.",
+      "description": "How long the dot takes to shrink away after you release. Only used when Frame-Perfect Mode is OFF. 0 removes it instantly.",
       "type": "int",
       "default": 120,
       "min": 0,
