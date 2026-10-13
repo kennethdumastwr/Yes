@@ -3,6 +3,7 @@
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/PlayLayer.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,10 +15,15 @@ namespace {
     // Each slot is one dot that can be held independently.
     enum Slot { SLOT_MAIN = 0, SLOT_LEFT = 1, SLOT_RIGHT = 2, SLOT_COUNT = 3 };
 
+    // Dots are created ONCE and reused (shown/hidden), so pressing never
+    // allocates or re-sorts the scene - that is what caused random hitches.
     struct DotSlot {
         Ref<CCDrawNode> dot;
         CCPoint lastPos = CCPointZero;
         bool hasLast = false;
+        bool held = false;
+        float drawnRadius = -1.f;
+        ccColor4F drawnColor = {-1.f, -1.f, -1.f, -1.f};
     };
 
     std::array<DotSlot, SLOT_COUNT> s_slots;
@@ -75,11 +81,66 @@ namespace {
         node->drawPolygon(verts, kSegments, color, 0.f, ccc4f(0.f, 0.f, 0.f, 0.f));
     }
 
-    // Called when the button / screen is pressed: dot appears and STAYS.
+    bool sameColor(const ccColor4F& a, const ccColor4F& b) {
+        return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+    }
+
+    // Creates the dot if needed, attaches it to the current scene, and redraws
+    // it only if size/color changed. Leaves it hidden. Returns null if disabled.
+    CCDrawNode* prepareDot(int slotIndex, CCScene* scene) {
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("enabled") || !scene) return nullptr;
+
+        const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
+        const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
+        const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
+        if (opacityPct <= 0.f || radius <= 0.f) return nullptr;
+
+        ccColor4F color = {
+            rgb.r / 255.f,
+            rgb.g / 255.f,
+            rgb.b / 255.f,
+            std::clamp(opacityPct / 100.f, 0.f, 1.f)
+        };
+
+        auto& slot = s_slots[slotIndex];
+        if (!slot.dot) {
+            auto node = CCDrawNode::create();
+            if (!node) return nullptr;
+            node->setVisible(false);
+            slot.dot = node;
+            slot.drawnRadius = -1.f;
+        }
+
+        CCDrawNode* dot = slot.dot.data();
+        if (dot->getParent() != scene) {
+            dot->removeFromParent();
+            scene->addChild(dot, 999999);
+        }
+        if (slot.drawnRadius != radius || !sameColor(slot.drawnColor, color)) {
+            dot->clear();
+            drawCircle(dot, radius, color);
+            slot.drawnRadius = radius;
+            slot.drawnColor = color;
+        }
+        return dot;
+    }
+
+    // Warm everything up when a level starts so the FIRST press is as fast as the rest.
+    void prewarmDots() {
+        auto director = CCDirector::sharedDirector();
+        auto scene = director ? director->getRunningScene() : nullptr;
+        if (!scene) return;
+        prepareDot(SLOT_MAIN, scene);
+        if (twoPlayerActive()) {
+            prepareDot(SLOT_LEFT, scene);
+            prepareDot(SLOT_RIGHT, scene);
+        }
+    }
+
+    // Called when the button / screen is pressed: dot appears INSTANTLY and STAYS.
     void showDot(int slotIndex) {
         auto mod = Mod::get();
-        if (!mod->getSettingValue<bool>("enabled")) return;
-
         auto director = CCDirector::sharedDirector();
         auto scene = director ? director->getRunningScene() : nullptr;
         if (!scene) return;
@@ -87,19 +148,16 @@ namespace {
         auto& slot = s_slots[slotIndex];
 
         // Already holding this dot in this scene.
-        if (slot.dot) {
-            if (slot.dot->getParent() == scene) return;
-            slot.dot = nullptr;
-        }
+        if (slot.held && slot.dot && slot.dot->getParent() == scene) return;
+
+        CCDrawNode* dot = prepareDot(slotIndex, scene);
+        if (!dot) return;
 
         const auto winSize = director->getWinSize();
-        const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
-        const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
+        const float radius = slot.drawnRadius;
         const float shake = static_cast<float>(mod->getSettingValue<int64_t>("shakiness"));
         float xPercent = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
         const float yPercent = static_cast<float>(mod->getSettingValue<int64_t>("y-position"));
-        const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
-        if (opacityPct <= 0.f || radius <= 0.f) return;
 
         // The left dot (Player 1 in two-player mode) is the mirrored X position.
         if (slotIndex == SLOT_LEFT) xPercent = 100.f - xPercent;
@@ -124,38 +182,33 @@ namespace {
         slot.lastPos = p;
         slot.hasLast = true;
 
-        auto dot = CCDrawNode::create();
-        if (!dot) return;
-        ccColor4F color = {
-            rgb.r / 255.f,
-            rgb.g / 255.f,
-            rgb.b / 255.f,
-            std::clamp(opacityPct / 100.f, 0.f, 1.f)
-        };
-        drawCircle(dot, radius, color);
+        dot->stopAllActions();
+        dot->setScale(1.f);
         dot->setPosition(p);
-        dot->setZOrder(999999);
-        scene->addChild(dot);
-        slot.dot = dot;
+        dot->setVisible(true);
+        slot.held = true;
     }
 
-    // Called when the button / screen is released: dot shrinks away and is removed.
+    // Called when the button / screen is released.
+    // Frame-Perfect Mode: the dot vanishes on the very same frame (no animation).
     void hideDot(int slotIndex) {
         auto& slot = s_slots[slotIndex];
+        if (!slot.held) return;
+        slot.held = false;
         if (!slot.dot) return;
-        CCDrawNode* dot = slot.dot.data();
-        slot.dot = nullptr;
-        if (!dot->getParent()) return;
 
-        const float fade = static_cast<float>(Mod::get()->getSettingValue<int64_t>("fade-out")) / 1000.f;
+        CCDrawNode* dot = slot.dot.data();
         dot->stopAllActions();
-        if (fade <= 0.f) {
-            dot->removeFromParent();
+
+        auto mod = Mod::get();
+        const float fade = static_cast<float>(mod->getSettingValue<int64_t>("fade-out")) / 1000.f;
+        if (mod->getSettingValue<bool>("frame-perfect") || fade <= 0.f) {
+            dot->setVisible(false);
             return;
         }
         dot->runAction(CCSequence::create(
             CCEaseOut::create(CCScaleTo::create(fade, 0.f), 2.f),
-            CCRemoveSelf::create(),
+            CCHide::create(),
             nullptr
         ));
     }
@@ -204,7 +257,9 @@ class $modify(ShowTapTouch, CCTouchDispatcher) {
         const int n = static_cast<int>(set->count());
         if (type == 0) {            // began
             if (mod->getSettingValue<bool>("only-when-playing") && !isPlayingLevel()) return;
-            // In 2-player levels the per-player button events draw the dots instead.
+            // While actually playing a level, the game's own jump events draw the dot.
+            // (A raw touch arrives BEFORE the game processes the jump, which looked early.)
+            if (PlayLayer::get() && !isPaused()) return;
             if (twoPlayerActive()) return;
             s_touchCount += n;
             showDot(SLOT_MAIN);
@@ -234,5 +289,13 @@ class $modify(ShowTapPause, PauseLayer) {
 
     void onShowTapSettings(CCObject*) {
         openSettingsPopup(Mod::get());
+    }
+};
+
+// Warm up the dots at level start / respawn so the first press has zero setup cost.
+class $modify(ShowTapPlayLayer, PlayLayer) {
+    void resetLevel() {
+        PlayLayer::resetLevel();
+        prewarmDots();
     }
 };
