@@ -6,6 +6,8 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <deque>
 #include <cmath>
 #include <cstdlib>
 
@@ -221,13 +223,96 @@ namespace {
         if (mod->getSettingValue<bool>("only-when-playing") && !isPlayingLevel()) return false;
         return true;
     }
+
+    // ---------- Alternate clicking mode ----------
+    // When your CPS reaches the target, clicks alternate: 1st -> right dot, 2nd -> left dot, ...
+    using Clock = std::chrono::steady_clock;
+    std::deque<Clock::time_point> s_pressTimes;   // presses in the last second (for CPS)
+    std::deque<int> s_heldSlots;                  // which dot each held click is using (FIFO)
+    Clock::time_point s_lastPress = Clock::now();
+    Clock::time_point s_lastRelease = Clock::now();
+    bool s_altRight = true;                       // next alternating click goes to the right dot
+
+    double secondsBetween(Clock::time_point a, Clock::time_point b) {
+        return std::chrono::duration<double>(a - b).count();
+    }
+
+    // Single-player press (not two-player mode).
+    void handleSinglePress() {
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("alt-click-mode")) {
+            showDot(SLOT_MAIN);
+            return;
+        }
+
+        const auto now = Clock::now();
+        // Dual mode pushes Player 1 AND Player 2 for one click: count it once.
+        if (secondsBetween(now, s_lastPress) < 0.002 && !s_heldSlots.empty()) return;
+        s_lastPress = now;
+
+        s_pressTimes.push_back(now);
+        while (!s_pressTimes.empty() && secondsBetween(now, s_pressTimes.front()) > 1.0) {
+            s_pressTimes.pop_front();
+        }
+
+        const int cps = static_cast<int>(s_pressTimes.size());
+        const int target = std::max<int>(1, static_cast<int>(mod->getSettingValue<int64_t>("alt-click-cps")));
+
+        int slot = SLOT_MAIN;
+        if (cps >= target) {
+            slot = s_altRight ? SLOT_RIGHT : SLOT_LEFT;
+            s_altRight = !s_altRight;
+        } else {
+            s_altRight = true;   // alternation restarts on the right
+        }
+
+        showDot(slot);
+        s_heldSlots.push_back(slot);
+        while (s_heldSlots.size() > 8) s_heldSlots.pop_front();
+    }
+
+    // Single-player release (not two-player mode).
+    void handleSingleRelease() {
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("alt-click-mode")) {
+            hideDot(SLOT_MAIN);
+            if (!s_heldSlots.empty()) {
+                s_heldSlots.clear();
+                hideDot(SLOT_LEFT);
+                hideDot(SLOT_RIGHT);
+            }
+            return;
+        }
+
+        const auto now = Clock::now();
+        // Ignore the duplicate release from Player 2 in dual mode.
+        if (secondsBetween(now, s_lastRelease) < 0.002) {
+            s_lastRelease = now;
+            return;
+        }
+        s_lastRelease = now;
+
+        if (s_heldSlots.empty()) {   // safety: never leave a dot stuck
+            hideDot(SLOT_MAIN);
+            hideDot(SLOT_LEFT);
+            hideDot(SLOT_RIGHT);
+            return;
+        }
+        const int slot = s_heldSlots.front();
+        s_heldSlots.pop_front();
+        hideDot(slot);
+    }
 }
 
 // Same detection method as the Click Sounds mod: the game's own button press/release events.
 class $modify(ShowTapPlayer, PlayerObject) {
     bool pushButton(PlayerButton button) {
         bool result = PlayerObject::pushButton(button);
-        if (shouldShowForButton(button)) showDot(slotFor(this));
+        if (shouldShowForButton(button)) {
+            const int slot = slotFor(this);
+            if (slot != SLOT_MAIN) showDot(slot);   // two-player mode: per-player dot
+            else handleSinglePress();               // single dot / alternate clicking
+        }
         return result;
     }
 
@@ -236,7 +321,9 @@ class $modify(ShowTapPlayer, PlayerObject) {
         // Always allow hiding so a dot can never get stuck.
         auto mod = Mod::get();
         if (!mod->getSettingValue<bool>("only-on-jump") || button == PlayerButton::Jump) {
-            hideDot(slotFor(this));
+            const int slot = slotFor(this);
+            if (slot != SLOT_MAIN) hideDot(slot);
+            else handleSingleRelease();
         }
         return result;
     }
