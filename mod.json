@@ -60,6 +60,24 @@
       "type": "bool",
       "default": false
     },
+    "alt-click-mode": {
+      "name": "Alternate clicking mode",
+      "description": "When your CPS (clicks per second) reaches the target below or higher, clicks alternate between the two sides: 1st click shows the RIGHT dot, 2nd click the LEFT dot, and so on. Below the target you get the normal single dot. Not used in 2-player levels.",
+      "type": "bool",
+      "default": false
+    },
+    "alt-click-cps": {
+      "name": "Alternate clicking CPS",
+      "description": "Type the CPS number that activates alternate clicking mode.",
+      "type": "int",
+      "default": 8,
+      "min": 1,
+      "max": 100,
+      "control": {
+        "input": true,
+        "slider": false
+      }
+    },
     "frame-perfect": {
       "name": "Frame-Perfect Mode",
       "description": "Dot appears and disappears on the exact frame of the jump press/release, with no animation. Turn off to use the Release Fade below.",
@@ -147,4 +165,4 @@
       }
     }
   }
-}
+    }
