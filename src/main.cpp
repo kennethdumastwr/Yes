@@ -224,13 +224,29 @@ namespace {
         return true;
     }
 
-    // ---------- Alternate clicking mode ----------
-    // When your CPS reaches the target, clicks alternate: 1st -> right dot, 2nd -> left dot, ...
+    // ---------- Alternate clicking mode (hold duration + air time) ----------
+    // Instead of counting clicks over a second, every click is judged by:
+    //   Hold Duration = how long the previous click was held (press -> release)
+    //   Air Time      = how long the button was up before this press (release -> press)
+    // If BOTH are at or below the limits for the target CPS, alternating turns on
+    // immediately (it only needs one click + release + the next click).
+    // Limits are in milliseconds for CPS 2..16 (edit these numbers to tune the feel).
+    //                                  CPS: 2    3    4    5    6    7   8   9   10  11  12  13  14  15  16
+    constexpr double kHoldMs[15] = {          300, 200, 150, 120, 100, 86, 75, 67, 60, 55, 50, 46, 43, 40, 38 };
+    constexpr double kAirMs[15]  = {          300, 200, 150, 120, 100, 86, 75, 67, 60, 55, 50, 46, 43, 40, 38 };
+
     using Clock = std::chrono::steady_clock;
-    std::deque<Clock::time_point> s_pressTimes;   // presses in the last second (for CPS)
-    std::deque<int> s_heldSlots;                  // which dot each held click is using (FIFO)
+
+    struct HeldClick {
+        int slot;
+        Clock::time_point start;
+    };
+    std::deque<HeldClick> s_heldClicks;           // clicks currently held (FIFO)
     Clock::time_point s_lastPress = Clock::now();
     Clock::time_point s_lastRelease = Clock::now();
+    bool s_hasCycle = false;                      // we have a finished click (hold + release time)
+    double s_lastHoldMs = 0.0;                    // hold duration of the last finished click
+    bool s_altActive = false;
     bool s_altRight = true;                       // next alternating click goes to the right dot
 
     double secondsBetween(Clock::time_point a, Clock::time_point b) {
@@ -247,28 +263,34 @@ namespace {
 
         const auto now = Clock::now();
         // Dual mode pushes Player 1 AND Player 2 for one click: count it once.
-        if (secondsBetween(now, s_lastPress) < 0.002 && !s_heldSlots.empty()) return;
+        if (secondsBetween(now, s_lastPress) < 0.002 && !s_heldClicks.empty()) return;
         s_lastPress = now;
 
-        s_pressTimes.push_back(now);
-        while (!s_pressTimes.empty() && secondsBetween(now, s_pressTimes.front()) > 1.0) {
-            s_pressTimes.pop_front();
+        int target = static_cast<int>(mod->getSettingValue<int64_t>("alt-click-cps"));
+        target = std::clamp(target, 2, 16);
+
+        bool qualifies = false;
+        if (s_hasCycle) {
+            const double airMs = secondsBetween(now, s_lastRelease) * 1000.0;
+            qualifies = s_lastHoldMs <= kHoldMs[target - 2] && airMs <= kAirMs[target - 2];
         }
 
-        const int cps = static_cast<int>(s_pressTimes.size());
-        const int target = std::max<int>(1, static_cast<int>(mod->getSettingValue<int64_t>("alt-click-cps")));
-
         int slot = SLOT_MAIN;
-        if (cps >= target) {
+        if (qualifies) {
+            if (!s_altActive) {
+                s_altActive = true;
+                s_altRight = false;   // previous click was the normal (right-side) dot, so go LEFT now
+            }
             slot = s_altRight ? SLOT_RIGHT : SLOT_LEFT;
             s_altRight = !s_altRight;
         } else {
-            s_altRight = true;   // alternation restarts on the right
+            s_altActive = false;
+            s_altRight = true;
         }
 
         showDot(slot);
-        s_heldSlots.push_back(slot);
-        while (s_heldSlots.size() > 8) s_heldSlots.pop_front();
+        s_heldClicks.push_back({slot, now});
+        while (s_heldClicks.size() > 8) s_heldClicks.pop_front();
     }
 
     // Single-player release (not two-player mode).
@@ -276,8 +298,8 @@ namespace {
         auto mod = Mod::get();
         if (!mod->getSettingValue<bool>("alt-click-mode")) {
             hideDot(SLOT_MAIN);
-            if (!s_heldSlots.empty()) {
-                s_heldSlots.clear();
+            if (!s_heldClicks.empty()) {
+                s_heldClicks.clear();
                 hideDot(SLOT_LEFT);
                 hideDot(SLOT_RIGHT);
             }
@@ -286,21 +308,24 @@ namespace {
 
         const auto now = Clock::now();
         // Ignore the duplicate release from Player 2 in dual mode.
-        if (secondsBetween(now, s_lastRelease) < 0.002) {
-            s_lastRelease = now;
-            return;
-        }
-        s_lastRelease = now;
+        if (secondsBetween(now, s_lastRelease) < 0.002) return;
 
-        if (s_heldSlots.empty()) {   // safety: never leave a dot stuck
+        if (s_heldClicks.empty()) {   // safety: never leave a dot stuck
+            s_lastRelease = now;
             hideDot(SLOT_MAIN);
             hideDot(SLOT_LEFT);
             hideDot(SLOT_RIGHT);
             return;
         }
-        const int slot = s_heldSlots.front();
-        s_heldSlots.pop_front();
-        hideDot(slot);
+
+        const HeldClick click = s_heldClicks.front();
+        s_heldClicks.pop_front();
+
+        s_lastHoldMs = secondsBetween(now, click.start) * 1000.0;   // Hold Duration
+        s_lastRelease = now;                                        // start of the Air Time
+        s_hasCycle = true;
+
+        hideDot(click.slot);
     }
 }
 
