@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <deque>
+#include <unordered_map>
 #include <cmath>
 #include <cstdlib>
 
@@ -215,6 +216,87 @@ namespace {
         ));
     }
 
+    // ---------- Real Show Tap (menus + pause screen) ----------
+    // Draws a dot exactly where each finger touches, follows it while it moves,
+    // and removes it on release. Supports multi-touch.
+    std::unordered_map<int, Ref<CCDrawNode>> s_realDots;
+
+    // Not playing a level: menus, pause screen, etc. (editor excluded so it never clashes).
+    bool realTapActive() {
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("enabled") || !mod->getSettingValue<bool>("real-show-tap")) return false;
+        if (LevelEditorLayer::get()) return false;
+        if (PlayLayer::get()) return isPaused();
+        return true;
+    }
+
+    void removeRealDot(int id) {
+        auto it = s_realDots.find(id);
+        if (it == s_realDots.end()) return;
+        Ref<CCDrawNode> dot = it->second;
+        s_realDots.erase(it);
+        if (!dot || !dot->getParent()) return;
+
+        auto mod = Mod::get();
+        const float fade = static_cast<float>(mod->getSettingValue<int64_t>("fade-out")) / 1000.f;
+        if (mod->getSettingValue<bool>("frame-perfect") || fade <= 0.f) {
+            dot->removeFromParent();
+            return;
+        }
+        dot->runAction(CCSequence::create(
+            CCEaseOut::create(CCScaleTo::create(fade, 0.f), 2.f),
+            CCRemoveSelf::create(),
+            nullptr
+        ));
+    }
+
+    void createRealDot(int id, const CCPoint& pos) {
+        removeRealDot(id);
+
+        auto mod = Mod::get();
+        auto director = CCDirector::sharedDirector();
+        auto scene = director ? director->getRunningScene() : nullptr;
+        if (!scene) return;
+
+        const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
+        const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
+        const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
+        if (opacityPct <= 0.f || radius <= 0.f) return;
+
+        auto dot = CCDrawNode::create();
+        if (!dot) return;
+        ccColor4F color = {
+            rgb.r / 255.f,
+            rgb.g / 255.f,
+            rgb.b / 255.f,
+            std::clamp(opacityPct / 100.f, 0.f, 1.f)
+        };
+        drawCircle(dot, radius, color);
+        dot->setPosition(pos);
+        scene->addChild(dot, 999999);
+        s_realDots[id] = dot;
+    }
+
+    // `active` = real show tap is allowed right now. Ended/cancelled touches are ALWAYS
+    // processed so a dot can never get stuck (e.g. you tap "Resume" on the pause menu).
+    void updateRealDots(CCSet* set, unsigned int type, bool active) {
+        for (auto it = set->begin(); it != set->end(); ++it) {
+            auto touch = typeinfo_cast<CCTouch*>(*it);
+            if (!touch) continue;
+            const int id = touch->getID();
+            if (type == 0) {                 // began
+                if (active) createRealDot(id, touch->getLocation());
+            } else if (type == 1) {          // moved
+                auto found = s_realDots.find(id);
+                if (found != s_realDots.end() && found->second) {
+                    found->second->setPosition(touch->getLocation());
+                }
+            } else {                         // ended / cancelled
+                removeRealDot(id);
+            }
+        }
+    }
+
     // Should a jump/left/right button PRESS show a dot?
     bool shouldShowForButton(PlayerButton button) {
         auto mod = Mod::get();
@@ -359,6 +441,11 @@ class $modify(ShowTapTouch, CCTouchDispatcher) {
     void touches(CCSet* set, CCEvent* event, unsigned int type) {
         CCTouchDispatcher::touches(set, event, type);
         if (!set) return;
+
+        // Real Show Tap: dot follows your finger in menus / pause screen.
+        const bool realActive = realTapActive();
+        if (realActive || !s_realDots.empty()) updateRealDots(set, type, realActive);
+        if (realActive) return;
 
         auto mod = Mod::get();
         if (mod->getSettingValue<bool>("only-on-jump")) {
