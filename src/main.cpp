@@ -1,5 +1,6 @@
 #include <Geode/Geode.hpp>
 #include <Geode/ui/GeodeUI.hpp>
+#include <Geode/ui/OverlayManager.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <deque>
 #include <unordered_map>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 
@@ -254,9 +256,9 @@ namespace {
         removeRealDot(id);
 
         auto mod = Mod::get();
-        auto director = CCDirector::sharedDirector();
-        auto scene = director ? director->getRunningScene() : nullptr;
-        if (!scene) return;
+        // Geode's overlay layer sits above the scene AND above popups / other mods' UIs.
+        auto overlay = OverlayManager::get();
+        if (!overlay) return;
 
         const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
         const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
@@ -273,7 +275,7 @@ namespace {
         };
         drawCircle(dot, radius, color);
         dot->setPosition(pos);
-        scene->addChild(dot, 999999);
+        overlay->addChild(dot, INT_MAX);
         s_realDots[id] = dot;
     }
 
@@ -289,7 +291,10 @@ namespace {
             } else if (type == 1) {          // moved
                 auto found = s_realDots.find(id);
                 if (found != s_realDots.end() && found->second) {
-                    found->second->setPosition(touch->getLocation());
+                    CCDrawNode* dot = found->second.data();
+                    dot->setPosition(touch->getLocation());
+                    // Stay on top even if a popup/UI was added after the touch started.
+                    if (auto parent = dot->getParent()) parent->reorderChild(dot, INT_MAX);
                 }
             } else {                         // ended / cancelled
                 removeRealDot(id);
