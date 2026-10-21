@@ -1,6 +1,5 @@
 #include <Geode/Geode.hpp>
 #include <Geode/ui/GeodeUI.hpp>
-#include <Geode/ui/OverlayManager.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
@@ -33,6 +32,8 @@ namespace {
 
     std::array<DotSlot, SLOT_COUNT> s_slots;
     int s_touchCount = 0;
+    // Set by the game's own "level complete" event (NOT the percentage, which some levels get wrong).
+    bool s_levelComplete = false;
 
     float randomOffset(float maxOffset) {
         if (maxOffset <= 0.f) return 0.f;
@@ -52,6 +53,7 @@ namespace {
     // Inside a level (or an editor playtest) and not paused.
     bool isPlayingLevel() {
         if (!PlayLayer::get() && !LevelEditorLayer::get()) return false;
+        if (PlayLayer::get() && s_levelComplete) return false;
         return !isPaused();
     }
 
@@ -223,13 +225,49 @@ namespace {
     // and removes it on release. Supports multi-touch.
     std::unordered_map<int, Ref<CCDrawNode>> s_realDots;
 
-    // Not playing a level: menus, pause screen, etc. (editor excluded so it never clashes).
+    // Not playing a level: menus, the level editor, the pause screen, etc.
     bool realTapActive() {
         auto mod = Mod::get();
         if (!mod->getSettingValue<bool>("enabled") || !mod->getSettingValue<bool>("real-show-tap")) return false;
-        if (LevelEditorLayer::get()) return false;
-        if (PlayLayer::get()) return isPaused();
-        return true;
+        if (!PlayLayer::get()) {
+            s_levelComplete = false;   // left the level: forget the completed state
+            return true;
+        }
+        // In a level: active while paused OR once the level has been completed.
+        return isPaused() || s_levelComplete;
+    }
+
+    // One dedicated layer that holds every real-tap dot. It is a child of the running
+    // scene and is always raised to sit ABOVE every other child of the scene.
+    // NOTE: the z-order is "highest sibling + 1", never INT_MAX. The game and other mods
+    // place new popups at "highest + 1"; INT_MAX would overflow and bury those UIs.
+    Ref<CCNode> s_tapLayer;
+
+    CCNode* raiseTapLayer() {
+        auto director = CCDirector::sharedDirector();
+        auto scene = director ? director->getRunningScene() : nullptr;
+        if (!scene) return nullptr;
+
+        if (!s_tapLayer) {
+            auto node = CCNode::create();
+            if (!node) return nullptr;
+            s_tapLayer = node;
+        }
+        CCNode* layer = s_tapLayer.data();
+
+        if (layer->getParent() != scene) {
+            layer->removeFromParentAndCleanup(false);
+            scene->addChild(layer, 0);
+        }
+
+        int highest = 0;
+        for (CCNode* child : scene->getChildrenExt()) {
+            if (child != layer) highest = std::max(highest, child->getZOrder());
+        }
+        const int z = highest >= INT_MAX - 1 ? INT_MAX - 1 : highest + 1;
+        // reorderChild also makes it the newest child, so it wins any tie.
+        scene->reorderChild(layer, z);
+        return layer;
     }
 
     void removeRealDot(int id) {
@@ -252,18 +290,19 @@ namespace {
         ));
     }
 
-    void createRealDot(int id, const CCPoint& pos) {
+    // `glPos` is the raw touch position in screen (GL) coordinates, captured BEFORE
+    // the game or any other mod gets to handle the touch.
+    void createRealDot(int id, const CCPoint& glPos) {
         removeRealDot(id);
 
         auto mod = Mod::get();
-        // Geode's overlay layer sits above the scene AND above popups / other mods' UIs.
-        auto overlay = OverlayManager::get();
-        if (!overlay) return;
-
         const float radius = static_cast<float>(mod->getSettingValue<int64_t>("dot-size"));
         const float opacityPct = static_cast<float>(mod->getSettingValue<int64_t>("opacity"));
         const ccColor3B rgb = mod->getSettingValue<ccColor3B>("dot-color");
         if (opacityPct <= 0.f || radius <= 0.f) return;
+
+        CCNode* layer = raiseTapLayer();
+        if (!layer) return;
 
         auto dot = CCDrawNode::create();
         if (!dot) return;
@@ -274,8 +313,8 @@ namespace {
             std::clamp(opacityPct / 100.f, 0.f, 1.f)
         };
         drawCircle(dot, radius, color);
-        dot->setPosition(pos);
-        overlay->addChild(dot, INT_MAX);
+        dot->setPosition(layer->convertToNodeSpace(glPos));
+        layer->addChild(dot);
         s_realDots[id] = dot;
     }
 
@@ -291,10 +330,14 @@ namespace {
             } else if (type == 1) {          // moved
                 auto found = s_realDots.find(id);
                 if (found != s_realDots.end() && found->second) {
-                    CCDrawNode* dot = found->second.data();
-                    dot->setPosition(touch->getLocation());
-                    // Stay on top even if a popup/UI was added after the touch started.
-                    if (auto parent = dot->getParent()) parent->reorderChild(dot, INT_MAX);
+                    CCNode* layer = raiseTapLayer();   // stays on top of newly opened UIs
+                    if (layer) {
+                        found->second->setPosition(layer->convertToNodeSpace(touch->getLocation()));
+                    }
+                } else if (active) {
+                    // Self-heal: finger is still down but the dot was lost (a UI/mod sent a
+                    // stray cancel, or the scene changed) - bring it back.
+                    createRealDot(id, touch->getLocation());
                 }
             } else {                         // ended / cancelled
                 removeRealDot(id);
@@ -444,12 +487,13 @@ class $modify(ShowTapPlayer, PlayerObject) {
 // Screen taps. Only used when "Only on jump" is OFF.
 class $modify(ShowTapTouch, CCTouchDispatcher) {
     void touches(CCSet* set, CCEvent* event, unsigned int type) {
+        // Real Show Tap runs BEFORE the game / other mods handle the touch, so scroll
+        // layers and UIs can never shift the position we read.
+        const bool realActive = set ? realTapActive() : false;
+        if (set && (realActive || !s_realDots.empty())) updateRealDots(set, type, realActive);
+
         CCTouchDispatcher::touches(set, event, type);
         if (!set) return;
-
-        // Real Show Tap: dot follows your finger in menus / pause screen.
-        const bool realActive = realTapActive();
-        if (realActive || !s_realDots.empty()) updateRealDots(set, type, realActive);
         if (realActive) return;
 
         auto mod = Mod::get();
@@ -499,7 +543,14 @@ class $modify(ShowTapPause, PauseLayer) {
 // Warm up the dots at level start / respawn so the first press has zero setup cost.
 class $modify(ShowTapPlayLayer, PlayLayer) {
     void resetLevel() {
+        s_levelComplete = false;   // restarted / new attempt: playing again
         PlayLayer::resetLevel();
         prewarmDots();
+    }
+
+    // The game's own "you beat the level" event - works even when the percentage is wrong.
+    void levelComplete() {
+        s_levelComplete = true;
+        PlayLayer::levelComplete();
     }
 };
