@@ -78,9 +78,38 @@
         "slider": false
       }
     },
+    "alt-button": {
+      "name": "In-game alternate clicking button",
+      "description": "Shows a small button in the bottom right of the screen while playing. Tap it to turn Alternate clicking mode on or off. Green = on, grey = off.",
+      "type": "bool",
+      "default": false
+    },
+    "alt-button-opacity": {
+      "name": "Alternate button opacity",
+      "description": "How see-through the in-game button is: 0 is invisible (still tappable), 1 is solid.",
+      "type": "float",
+      "default": 0.6,
+      "min": 0,
+      "max": 1,
+      "control": {
+        "slider": true
+      }
+    },
     "real-show-tap": {
       "name": "Real Show Tap (not playing)",
       "description": "Outside of gameplay (menus, navigating Geometry Dash, the pause screen) a dot appears exactly where you touch, follows your finger, and disappears when you lift it. Supports multiple fingers. Uses your dot size, opacity and color.",
+      "type": "bool",
+      "default": true
+    },
+    "real-show-tap-playing": {
+      "name": "Real Show Tap during gameplay too",
+      "description": "Also draw the dot under your finger while you are playing a level. You then get BOTH the real dot and the normal jump dot at the same time.",
+      "type": "bool",
+      "default": false
+    },
+    "independent-layer": {
+      "name": "Draw above all UI (independent layer)",
+      "description": "Real Show Tap is drawn after everything else, outside every menu and scroll list, so nothing can cover it or make it flicker. If the real dot ever stops showing, turn this OFF.",
       "type": "bool",
       "default": true
     },
@@ -166,6 +195,17 @@
       "default": 5,
       "min": 0,
       "max": 80,
+      "control": {
+        "slider": true
+      }
+    },
+    "sway": {
+      "name": "Sway",
+      "description": "The held dot slowly drifts around in all directions by up to this many points. 0 keeps it still.",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 40,
       "control": {
         "slider": true
       }
