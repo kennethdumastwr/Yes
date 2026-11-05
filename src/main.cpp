@@ -4,6 +4,7 @@
 #include <Geode/modify/CCTouchDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/UILayer.hpp>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -14,6 +15,51 @@
 #include <cstdlib>
 
 using namespace geode::prelude;
+
+// A dot that gently drifts around its base position while it is shown ("sway").
+// The drift is smooth (a mix of slow sine waves) and never leaves +/- m_amp points.
+class SwayDot : public CCDrawNode {
+public:
+    CCPoint m_base = CCPointZero;
+    float m_amp = 0.f;
+    float m_time = 0.f;
+    float m_phase[4] = {0.f, 0.f, 0.f, 0.f};
+
+    static SwayDot* create() {
+        auto ret = new SwayDot();
+        if (ret && ret->init()) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+
+    bool init() override {
+        if (!CCDrawNode::init()) return false;
+        this->scheduleUpdate();
+        return true;
+    }
+
+    // Call every time the dot is (re)shown at a new base position.
+    void startSway(const CCPoint& base, float amplitude) {
+        m_base = base;
+        m_amp = amplitude;
+        m_time = 0.f;
+        for (auto& ph : m_phase) {
+            ph = (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX)) * 6.2831853f;
+        }
+        this->setPosition(base);
+    }
+
+    void update(float dt) override {
+        if (m_amp <= 0.f || !this->isVisible()) return;
+        m_time += dt;
+        const float ox = 0.6f * std::sin(1.7f * m_time + m_phase[0]) + 0.4f * std::sin(2.9f * m_time + m_phase[1]);
+        const float oy = 0.6f * std::sin(1.3f * m_time + m_phase[2]) + 0.4f * std::sin(3.3f * m_time + m_phase[3]);
+        this->setPosition(ccp(m_base.x + ox * m_amp, m_base.y + oy * m_amp));
+    }
+};
 
 namespace {
     // Each slot is one dot that can be held independently.
@@ -112,7 +158,7 @@ namespace {
 
         auto& slot = s_slots[slotIndex];
         if (!slot.dot) {
-            auto node = CCDrawNode::create();
+            auto node = SwayDot::create();
             if (!node) return nullptr;
             node->setVisible(false);
             slot.dot = node;
@@ -191,7 +237,8 @@ namespace {
 
         dot->stopAllActions();
         dot->setScale(1.f);
-        dot->setPosition(p);
+        const float sway = static_cast<float>(mod->getSettingValue<int64_t>("sway"));
+        static_cast<SwayDot*>(dot)->startSway(p, sway);   // also sets the position
         dot->setVisible(true);
         slot.held = true;
     }
@@ -233,20 +280,23 @@ namespace {
             s_levelComplete = false;   // left the level: forget the completed state
             return true;
         }
-        // In a level: active while paused OR once the level has been completed.
-        return isPaused() || s_levelComplete;
+        // In a level: active while paused, once completed, or ALWAYS if "during gameplay" is on.
+        return isPaused() || s_levelComplete || mod->getSettingValue<bool>("real-show-tap-playing");
     }
 
-    // One dedicated layer that holds every real-tap dot. It is a child of the running
-    // scene and is always raised to sit ABOVE every other child of the scene.
-    // NOTE: the z-order is "highest sibling + 1", never INT_MAX. The game and other mods
-    // place new popups at "highest + 1"; INT_MAX would overflow and bury those UIs.
+    // One dedicated layer that holds every real-tap dot.
+    //
+    // INDEPENDENT mode (default): the layer is NOT part of any scene. It hangs off the
+    // director's notification node, which the engine draws AFTER the whole scene every
+    // frame. So no scroll layer, popup, clipping node or other mod's z-order can ever
+    // cover it, move it or make it flicker.
+    // CLASSIC mode (fallback toggle): a child of the running scene, raised to
+    // "highest sibling + 1" (never INT_MAX - popups use "highest + 1" and would overflow).
     Ref<CCNode> s_tapLayer;
 
     CCNode* raiseTapLayer() {
         auto director = CCDirector::sharedDirector();
-        auto scene = director ? director->getRunningScene() : nullptr;
-        if (!scene) return nullptr;
+        if (!director) return nullptr;
 
         if (!s_tapLayer) {
             auto node = CCNode::create();
@@ -254,6 +304,27 @@ namespace {
             s_tapLayer = node;
         }
         CCNode* layer = s_tapLayer.data();
+
+        if (Mod::get()->getSettingValue<bool>("independent-layer")) {
+            CCNode* note = director->getNotificationNode();
+            if (!note) {
+                // Nobody uses the notification node: our layer becomes it.
+                layer->removeFromParentAndCleanup(false);
+                director->setNotificationNode(layer);
+            } else if (note != layer && layer->getParent() != note) {
+                layer->removeFromParentAndCleanup(false);
+                note->addChild(layer, 1000000);
+            }
+            // The engine does not "enter" notification nodes by itself; without this the
+            // fade-out animations would stay paused.
+            if (!layer->isRunning()) layer->onEnter();
+            return layer;
+        }
+
+        // ---- classic mode ----
+        if (director->getNotificationNode() == layer) director->setNotificationNode(nullptr);
+        auto scene = director->getRunningScene();
+        if (!scene) return nullptr;
 
         if (layer->getParent() != scene) {
             layer->removeFromParentAndCleanup(false);
@@ -457,6 +528,24 @@ namespace {
 
         hideDot(click.slot);
     }
+
+    // ---------- In-game alternate-clicking button ----------
+    constexpr float kAltButtonRadius = 22.f;
+    Ref<CCDrawNode> s_altCircle;
+    Ref<CCLabelBMFont> s_altLabel;
+
+    void refreshAltButton() {
+        if (!s_altCircle || !s_altLabel) return;
+        auto mod = Mod::get();
+        const float opacity = std::clamp(static_cast<float>(mod->getSettingValue<double>("alt-button-opacity")), 0.f, 1.f);
+        const bool on = mod->getSettingValue<bool>("alt-click-mode");
+
+        // Green when alternate clicking is ON, grey when OFF.
+        ccColor4F fill = on ? ccc4f(0.25f, 0.85f, 0.35f, opacity) : ccc4f(0.35f, 0.35f, 0.35f, opacity);
+        s_altCircle->clear();
+        drawCircle(s_altCircle.data(), kAltButtonRadius, fill);
+        s_altLabel->setOpacity(static_cast<unsigned char>(opacity * 255.f));
+    }
 }
 
 // Same detection method as the Click Sounds mod: the game's own button press/release events.
@@ -552,5 +641,45 @@ class $modify(ShowTapPlayLayer, PlayLayer) {
     void levelComplete() {
         s_levelComplete = true;
         PlayLayer::levelComplete();
+    }
+};
+
+// In-game button (bottom right): taps toggle "Alternate clicking mode" on/off.
+class $modify(ShowTapUILayer, UILayer) {
+    bool init(GJBaseGameLayer* layer) {
+        if (!UILayer::init(layer)) return false;
+        if (!Mod::get()->getSettingValue<bool>("alt-button")) return true;
+
+        const float R = kAltButtonRadius;
+        auto face = CCNode::create();
+        face->setContentSize({R * 2.f, R * 2.f});
+
+        auto circle = CCDrawNode::create();
+        circle->setPosition({R, R});
+        auto label = CCLabelBMFont::create("ALT", "bigFont.fnt");
+        label->setScale(0.45f);
+        label->setPosition({R, R});
+        face->addChild(circle);
+        face->addChild(label);
+        s_altCircle = circle;
+        s_altLabel = label;
+        refreshAltButton();
+
+        auto btn = CCMenuItemSpriteExtra::create(
+            face, this, menu_selector(ShowTapUILayer::onToggleAltClicking)
+        );
+        auto menu = CCMenu::create();
+        menu->setPosition({0.f, 0.f});
+        menu->addChild(btn);
+        const auto win = CCDirector::sharedDirector()->getWinSize();
+        btn->setPosition({win.width - 34.f, 34.f});
+        this->addChild(menu, 100);
+        return true;
+    }
+
+    void onToggleAltClicking(CCObject*) {
+        auto mod = Mod::get();
+        mod->setSettingValue<bool>("alt-click-mode", !mod->getSettingValue<bool>("alt-click-mode"));
+        refreshAltButton();
     }
 };
