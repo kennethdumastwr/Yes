@@ -10,56 +10,12 @@
 #include <chrono>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
 
 using namespace geode::prelude;
-
-// A dot that gently drifts around its base position while it is shown ("sway").
-// The drift is smooth (a mix of slow sine waves) and never leaves +/- m_amp points.
-class SwayDot : public CCDrawNode {
-public:
-    CCPoint m_base = CCPointZero;
-    float m_amp = 0.f;
-    float m_time = 0.f;
-    float m_phase[4] = {0.f, 0.f, 0.f, 0.f};
-
-    static SwayDot* create() {
-        auto ret = new SwayDot();
-        if (ret && ret->init()) {
-            ret->autorelease();
-            return ret;
-        }
-        delete ret;
-        return nullptr;
-    }
-
-    bool init() override {
-        if (!CCDrawNode::init()) return false;
-        this->scheduleUpdate();
-        return true;
-    }
-
-    // Call every time the dot is (re)shown at a new base position.
-    void startSway(const CCPoint& base, float amplitude) {
-        m_base = base;
-        m_amp = amplitude;
-        m_time = 0.f;
-        for (auto& ph : m_phase) {
-            ph = (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX)) * 6.2831853f;
-        }
-        this->setPosition(base);
-    }
-
-    void update(float dt) override {
-        if (m_amp <= 0.f || !this->isVisible()) return;
-        m_time += dt;
-        const float ox = 0.6f * std::sin(1.7f * m_time + m_phase[0]) + 0.4f * std::sin(2.9f * m_time + m_phase[1]);
-        const float oy = 0.6f * std::sin(1.3f * m_time + m_phase[2]) + 0.4f * std::sin(3.3f * m_time + m_phase[3]);
-        this->setPosition(ccp(m_base.x + ox * m_amp, m_base.y + oy * m_amp));
-    }
-};
 
 namespace {
     // Each slot is one dot that can be held independently.
@@ -74,6 +30,11 @@ namespace {
         bool held = false;
         float drawnRadius = -1.f;
         ccColor4F drawnColor = {-1.f, -1.f, -1.f, -1.f};
+        // Sway (slow drifting while held)
+        CCPoint swayBase = CCPointZero;
+        float swayAmp = 0.f;
+        float swayTime = 0.f;
+        float swayPhase[4] = {0.f, 0.f, 0.f, 0.f};
     };
 
     std::array<DotSlot, SLOT_COUNT> s_slots;
@@ -131,7 +92,39 @@ namespace {
             float a = (2.f * kPi * static_cast<float>(i)) / static_cast<float>(kSegments);
             verts[i] = ccp(std::cos(a) * radius, std::sin(a) * radius);
         }
-        node->drawPolygon(verts, kSegments, color, 0.f, ccc4f(0.f, 0.f, 0.f, 0.f));
+        // The engine draws these shapes with PREMULTIPLIED alpha blending, so the colour
+        // must be multiplied by its alpha. Without this, alpha 0 still drew the full colour.
+        ccColor4F pm = {color.r * color.a, color.g * color.a, color.b * color.a, color.a};
+        node->drawPolygon(verts, kSegments, pm, 0.f, ccc4f(0.f, 0.f, 0.f, 0.f));
+    }
+
+    // ---------- Sway ----------
+    // Driven by the DIRECTOR's scheduler (not by a scene node): a scene wipes its nodes'
+    // scheduled updates whenever it closes, which silently killed sway before.
+    void tickSway(float dt) {
+        for (auto& slot : s_slots) {
+            if (!slot.held || slot.swayAmp <= 0.f || !slot.dot || !slot.dot->isVisible()) continue;
+            slot.swayTime += dt;
+            const float t = slot.swayTime;
+            const float ox = 0.6f * std::sin(1.7f * t + slot.swayPhase[0]) + 0.4f * std::sin(2.9f * t + slot.swayPhase[1]);
+            const float oy = 0.6f * std::sin(1.3f * t + slot.swayPhase[2]) + 0.4f * std::sin(3.3f * t + slot.swayPhase[3]);
+            slot.dot->setPosition(ccp(slot.swayBase.x + ox * slot.swayAmp, slot.swayBase.y + oy * slot.swayAmp));
+        }
+    }
+
+    class SwayTicker : public CCObject {
+    public:
+        void update(float dt) override { tickSway(dt); }
+    };
+
+    void ensureSwayTicker() {
+        static bool started = false;
+        if (started) return;
+        auto director = CCDirector::sharedDirector();
+        if (!director || !director->getScheduler()) return;
+        started = true;
+        auto ticker = new SwayTicker();   // intentionally lives for the whole session
+        director->getScheduler()->scheduleUpdateForTarget(ticker, 0, false);
     }
 
     bool sameColor(const ccColor4F& a, const ccColor4F& b) {
@@ -158,7 +151,7 @@ namespace {
 
         auto& slot = s_slots[slotIndex];
         if (!slot.dot) {
-            auto node = SwayDot::create();
+            auto node = CCDrawNode::create();
             if (!node) return nullptr;
             node->setVisible(false);
             slot.dot = node;
@@ -167,7 +160,7 @@ namespace {
 
         CCDrawNode* dot = slot.dot.data();
         if (dot->getParent() != scene) {
-            dot->removeFromParent();
+            dot->removeFromParentAndCleanup(false);
             scene->addChild(dot, 999999);
         }
         if (slot.drawnRadius != radius || !sameColor(slot.drawnColor, color)) {
@@ -237,8 +230,14 @@ namespace {
 
         dot->stopAllActions();
         dot->setScale(1.f);
-        const float sway = static_cast<float>(mod->getSettingValue<int64_t>("sway"));
-        static_cast<SwayDot*>(dot)->startSway(p, sway);   // also sets the position
+        slot.swayBase = p;
+        slot.swayAmp = static_cast<float>(mod->getSettingValue<int64_t>("sway"));
+        slot.swayTime = 0.f;
+        for (auto& ph : slot.swayPhase) {
+            ph = (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX)) * 6.2831853f;
+        }
+        ensureSwayTicker();
+        dot->setPosition(p);
         dot->setVisible(true);
         slot.held = true;
     }
@@ -271,6 +270,17 @@ namespace {
     // Draws a dot exactly where each finger touches, follows it while it moves,
     // and removes it on release. Supports multi-touch.
     std::unordered_map<int, Ref<CCDrawNode>> s_realDots;
+
+    // Touches that started on the in-game ALT button: they must never draw a real dot.
+    Ref<CCNode> s_altBtn;
+    std::unordered_set<int> s_ignoredTouches;
+
+    bool touchOnAltButton(const CCPoint& glPos) {
+        if (!s_altBtn || !s_altBtn->getParent() || !s_altBtn->isVisible()) return false;
+        const CCPoint local = s_altBtn->convertToNodeSpace(glPos);
+        const CCSize sz = s_altBtn->getContentSize();
+        return CCRect(-6.f, -6.f, sz.width + 12.f, sz.height + 12.f).containsPoint(local);
+    }
 
     // Not playing a level: menus, the level editor, the pause screen, etc.
     bool realTapActive() {
@@ -397,8 +407,14 @@ namespace {
             if (!touch) continue;
             const int id = touch->getID();
             if (type == 0) {                 // began
-                if (active) createRealDot(id, touch->getLocation());
+                if (touchOnAltButton(touch->getLocation())) {
+                    s_ignoredTouches.insert(id);   // pressing the ALT button: no dot
+                } else {
+                    s_ignoredTouches.erase(id);
+                    if (active) createRealDot(id, touch->getLocation());
+                }
             } else if (type == 1) {          // moved
+                if (s_ignoredTouches.count(id)) continue;
                 auto found = s_realDots.find(id);
                 if (found != s_realDots.end() && found->second) {
                     CCNode* layer = raiseTapLayer();   // stays on top of newly opened UIs
@@ -411,6 +427,7 @@ namespace {
                     createRealDot(id, touch->getLocation());
                 }
             } else {                         // ended / cancelled
+                s_ignoredTouches.erase(id);
                 removeRealDot(id);
             }
         }
@@ -454,30 +471,86 @@ namespace {
         return std::chrono::duration<double>(a - b).count();
     }
 
-    // Single-player press (not two-player mode).
+    // ---------- Tap sounds ----------
+    // 6 "Normal" + 6 "Light" mp3 files from the mod's resources folder. They are loaded
+    // once (preloaded) and played straight through FMOD for the lowest possible latency.
+    FMOD::Sound* s_tapSounds[2][6] = {};
+    bool s_tapSoundsTried = false;
+    int s_lastTapIndex[2] = {-1, -1};
+
+    void loadTapSounds() {
+        if (s_tapSoundsTried) return;
+        auto engine = FMODAudioEngine::sharedEngine();
+        if (!engine || !engine->m_system) return;   // audio not ready yet: try again later
+        s_tapSoundsTried = true;
+
+        const auto dir = Mod::get()->getResourcesDir();
+        for (int kind = 0; kind < 2; ++kind) {
+            for (int i = 0; i < 6; ++i) {
+                const auto path = (dir / fmt::format("{}{}.mp3", kind == 0 ? "Normal" : "Light", i + 1)).string();
+                FMOD::Sound* sound = nullptr;
+                if (engine->m_system->createSound(path.c_str(), FMOD_DEFAULT, nullptr, &sound) == FMOD_OK) {
+                    s_tapSounds[kind][i] = sound;
+                }
+            }
+        }
+    }
+
+    // Plays one of the 6 variants (never the same one twice in a row).
+    void playTapSound(bool light) {
+        auto mod = Mod::get();
+        if (!mod->getSettingValue<bool>("enabled") || !mod->getSettingValue<bool>("tap-sounds")) return;
+
+        loadTapSounds();
+        auto engine = FMODAudioEngine::sharedEngine();
+        if (!engine || !engine->m_system) return;
+
+        const int kind = light ? 1 : 0;
+        int idx = std::rand() % 6;
+        if (idx == s_lastTapIndex[kind]) idx = (idx + 1 + std::rand() % 5) % 6;
+
+        FMOD::Sound* sound = s_tapSounds[kind][idx];
+        if (!sound) {   // that file failed to load: use any variant that did
+            for (int i = 0; i < 6 && !sound; ++i) {
+                if (s_tapSounds[kind][i]) { sound = s_tapSounds[kind][i]; idx = i; }
+            }
+            if (!sound) return;
+        }
+        s_lastTapIndex[kind] = idx;
+
+        const float volume = std::clamp(static_cast<float>(mod->getSettingValue<int64_t>("tap-volume")) / 100.f, 0.f, 1.f);
+        FMOD::Channel* channel = nullptr;
+        if (engine->m_system->playSound(sound, nullptr, true, &channel) == FMOD_OK && channel) {
+            channel->setVolume(volume);
+            channel->setPaused(false);
+        }
+    }
+
+    // Does the last finished click + the gap before this press fit the given CPS?
+    bool cycleQualifies(Clock::time_point now, int targetCps) {
+        if (!s_hasCycle) return false;
+        const int t = std::clamp(targetCps, 2, 16);
+        const double airMs = secondsBetween(now, s_lastRelease) * 1000.0;
+        return s_lastHoldMs <= kHoldMs[t - 2] && airMs <= kAirMs[t - 2];
+    }
+
+    // Single-player press (not two-player mode): picks the dot AND the sound.
     void handleSinglePress() {
         auto mod = Mod::get();
-        if (!mod->getSettingValue<bool>("alt-click-mode")) {
-            showDot(SLOT_MAIN);
-            return;
-        }
+        if (!mod->getSettingValue<bool>("enabled")) return;
 
         const auto now = Clock::now();
         // Dual mode pushes Player 1 AND Player 2 for one click: count it once.
         if (secondsBetween(now, s_lastPress) < 0.002 && !s_heldClicks.empty()) return;
         s_lastPress = now;
 
-        int target = static_cast<int>(mod->getSettingValue<int64_t>("alt-click-cps"));
-        target = std::clamp(target, 2, 16);
-
-        bool qualifies = false;
-        if (s_hasCycle) {
-            const double airMs = secondsBetween(now, s_lastRelease) * 1000.0;
-            qualifies = s_lastHoldMs <= kHoldMs[target - 2] && airMs <= kAirMs[target - 2];
-        }
-
+        // ---- which dot (alternate clicking) ----
         int slot = SLOT_MAIN;
-        if (qualifies) {
+        bool altQualifies = false;
+        if (mod->getSettingValue<bool>("alt-click-mode")) {
+            altQualifies = cycleQualifies(now, static_cast<int>(mod->getSettingValue<int64_t>("alt-click-cps")));
+        }
+        if (altQualifies) {
             if (!s_altActive) {
                 s_altActive = true;
                 s_altRight = false;   // previous click was the normal (right-side) dot, so go LEFT now
@@ -489,24 +562,26 @@ namespace {
             s_altRight = true;
         }
 
+        // ---- which sound (normal or light) ----
+        // Light plays when alternate clicking is active, OR when its own CPS is reached.
+        if (mod->getSettingValue<bool>("tap-sounds")) {
+            bool light = false;
+            if (s_altActive && mod->getSettingValue<bool>("light-on-alternate")) light = true;
+            if (!light && mod->getSettingValue<bool>("light-own-cps") &&
+                cycleQualifies(now, static_cast<int>(mod->getSettingValue<int64_t>("light-cps")))) {
+                light = true;
+            }
+            playTapSound(light);
+        }
+
         showDot(slot);
         s_heldClicks.push_back({slot, now});
         while (s_heldClicks.size() > 8) s_heldClicks.pop_front();
     }
 
-    // Single-player release (not two-player mode).
+    // Single-player release (not two-player mode). Always measures the hold duration,
+    // because the light-sound CPS needs it even when alternate clicking is off.
     void handleSingleRelease() {
-        auto mod = Mod::get();
-        if (!mod->getSettingValue<bool>("alt-click-mode")) {
-            hideDot(SLOT_MAIN);
-            if (!s_heldClicks.empty()) {
-                s_heldClicks.clear();
-                hideDot(SLOT_LEFT);
-                hideDot(SLOT_RIGHT);
-            }
-            return;
-        }
-
         const auto now = Clock::now();
         // Ignore the duplicate release from Player 2 in dual mode.
         if (secondsBetween(now, s_lastRelease) < 0.002) return;
@@ -554,7 +629,10 @@ class $modify(ShowTapPlayer, PlayerObject) {
         bool result = PlayerObject::pushButton(button);
         if (shouldShowForButton(button)) {
             const int slot = slotFor(this);
-            if (slot != SLOT_MAIN) showDot(slot);   // two-player mode: per-player dot
+            if (slot != SLOT_MAIN) {                // two-player mode: per-player dot
+                showDot(slot);
+                playTapSound(false);
+            }
             else handleSinglePress();               // single dot / alternate clicking
         }
         return result;
@@ -635,6 +713,7 @@ class $modify(ShowTapPlayLayer, PlayLayer) {
         s_levelComplete = false;   // restarted / new attempt: playing again
         PlayLayer::resetLevel();
         prewarmDots();
+        loadTapSounds();
     }
 
     // The game's own "you beat the level" event - works even when the percentage is wrong.
@@ -668,6 +747,7 @@ class $modify(ShowTapUILayer, UILayer) {
         auto btn = CCMenuItemSpriteExtra::create(
             face, this, menu_selector(ShowTapUILayer::onToggleAltClicking)
         );
+        s_altBtn = btn;
         auto menu = CCMenu::create();
         menu->setPosition({0.f, 0.f});
         menu->addChild(btn);
