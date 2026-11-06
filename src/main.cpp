@@ -11,6 +11,12 @@
 #include <deque>
 #include <unordered_map>
 #include <unordered_set>
+#include <cctype>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <vector>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -201,12 +207,22 @@ namespace {
 
         const auto winSize = director->getWinSize();
         const float radius = slot.drawnRadius;
-        const float shake = static_cast<float>(mod->getSettingValue<int64_t>("shakiness"));
-        float xPercent = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
-        const float yPercent = static_cast<float>(mod->getSettingValue<int64_t>("y-position"));
-
-        // The left dot (Player 1 in two-player mode) is the mirrored X position.
-        if (slotIndex == SLOT_LEFT) xPercent = 100.f - xPercent;
+        // The LEFT dot (alternate clicking / Player 1 in two-player mode) has its OWN
+        // position, shakiness and sway, so it is independent of the right dot.
+        // (Turn on "Mirror left dot" to get the old mirrored behaviour.)
+        float shake, xPercent, yPercent, swayAmount;
+        if (slotIndex == SLOT_LEFT && !mod->getSettingValue<bool>("left-mirror")) {
+            shake      = static_cast<float>(mod->getSettingValue<int64_t>("left-shakiness"));
+            xPercent   = static_cast<float>(mod->getSettingValue<int64_t>("left-x-position"));
+            yPercent   = static_cast<float>(mod->getSettingValue<int64_t>("left-y-position"));
+            swayAmount = static_cast<float>(mod->getSettingValue<int64_t>("left-sway"));
+        } else {
+            shake      = static_cast<float>(mod->getSettingValue<int64_t>("shakiness"));
+            xPercent   = static_cast<float>(mod->getSettingValue<int64_t>("x-position"));
+            yPercent   = static_cast<float>(mod->getSettingValue<int64_t>("y-position"));
+            swayAmount = static_cast<float>(mod->getSettingValue<int64_t>("sway"));
+            if (slotIndex == SLOT_LEFT) xPercent = 100.f - xPercent;   // mirror mode
+        }
 
         // X/Y are percentages of the screen. Cocos origin is bottom-left.
         CCPoint p = ccp(winSize.width * std::clamp(xPercent, 0.f, 100.f) / 100.f,
@@ -231,7 +247,7 @@ namespace {
         dot->stopAllActions();
         dot->setScale(1.f);
         slot.swayBase = p;
-        slot.swayAmp = static_cast<float>(mod->getSettingValue<int64_t>("sway"));
+        slot.swayAmp = swayAmount;
         slot.swayTime = 0.f;
         for (auto& ph : slot.swayPhase) {
             ph = (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX)) * 6.2831853f;
@@ -472,11 +488,87 @@ namespace {
     }
 
     // ---------- Tap sounds ----------
-    // 6 "Normal" + 6 "Light" mp3 files from the mod's resources folder. They are loaded
-    // once (preloaded) and played straight through FMOD for the lowest possible latency.
-    FMOD::Sound* s_tapSounds[2][6] = {};
+    // Every file in the mod's resources folder named  Normal<number>.mp3  or
+    // Light<number>.mp3  is picked up automatically (any amount, any numbers), so you can
+    // add or delete files freely. They are loaded once, loudness-matched, and played
+    // straight through FMOD for the lowest latency.
+    struct TapSound {
+        FMOD::Sound* sound = nullptr;
+        float gain = 1.f;          // loudness-matching gain for this file
+        uint64_t hash = 0;         // content hash: identical files count as "the same sound"
+    };
+    struct TapBag {                // shuffle-bag: every sound plays once before any repeats
+        std::vector<int> order;
+        size_t pos = 0;
+        int lastIndex = -1;
+        uint64_t lastHash = 0;
+    };
+
+    std::vector<TapSound> s_tapSounds[2];   // [0] = Normal, [1] = Light
+    TapBag s_tapBags[2];
     bool s_tapSoundsTried = false;
-    int s_lastTapIndex[2] = {-1, -1};
+    std::mt19937 s_tapRng{std::random_device{}()};
+
+    // Highest sample level of a decoded sound, 0..1 (0 if it cannot be read).
+    float measurePeak(FMOD::Sound* sound) {
+        FMOD_SOUND_FORMAT format = FMOD_SOUND_FORMAT_NONE;
+        int channels = 0, bits = 0;
+        if (sound->getFormat(nullptr, &format, &channels, &bits) != FMOD_OK) return 0.f;
+        unsigned int length = 0;
+        if (sound->getLength(&length, FMOD_TIMEUNIT_PCMBYTES) != FMOD_OK || length == 0) return 0.f;
+
+        void* p1 = nullptr; void* p2 = nullptr;
+        unsigned int l1 = 0, l2 = 0;
+        if (sound->lock(0, length, &p1, &p2, &l1, &l2) != FMOD_OK) return 0.f;
+
+        float peak = 0.f;
+        auto scan = [&](void* data, unsigned int bytes) {
+            if (!data || bytes == 0) return;
+            if (format == FMOD_SOUND_FORMAT_PCM16) {
+                auto samples = static_cast<const int16_t*>(data);
+                for (unsigned int i = 0; i < bytes / 2; ++i) {
+                    peak = std::max(peak, std::abs(static_cast<float>(samples[i]) / 32768.f));
+                }
+            } else if (format == FMOD_SOUND_FORMAT_PCMFLOAT) {
+                auto samples = static_cast<const float*>(data);
+                for (unsigned int i = 0; i < bytes / 4; ++i) {
+                    peak = std::max(peak, std::abs(samples[i]));
+                }
+            }
+        };
+        scan(p1, l1);
+        scan(p2, l2);
+        sound->unlock(p1, p2, l1, l2);
+        return peak;
+    }
+
+    uint64_t hashFile(const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        uint64_t h = 1469598103934665603ull;   // FNV-1a
+        char c;
+        while (file.get(c)) {
+            h ^= static_cast<unsigned char>(c);
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+
+    // "Normal12.mp3" -> kind 0, number 12.  "Light3.MP3" -> kind 1, number 3.  Else -1.
+    int parseTapFileName(const std::string& fileName, int& number) {
+        std::string lower;
+        for (char ch : fileName) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".mp3") != 0) return -1;
+        const std::string stem = lower.substr(0, lower.size() - 4);
+
+        int kind = -1;
+        std::string digits;
+        if (stem.rfind("normal", 0) == 0) { kind = 0; digits = stem.substr(6); }
+        else if (stem.rfind("light", 0) == 0) { kind = 1; digits = stem.substr(5); }
+        if (kind < 0 || digits.empty() || digits.size() > 9) return -1;
+        for (char ch : digits) if (ch < '0' || ch > '9') return -1;
+        number = std::stoi(digits);
+        return kind;
+    }
 
     void loadTapSounds() {
         if (s_tapSoundsTried) return;
@@ -484,19 +576,69 @@ namespace {
         if (!engine || !engine->m_system) return;   // audio not ready yet: try again later
         s_tapSoundsTried = true;
 
-        const auto dir = Mod::get()->getResourcesDir();
-        for (int kind = 0; kind < 2; ++kind) {
-            for (int i = 0; i < 6; ++i) {
-                const auto path = (dir / fmt::format("{}{}.mp3", kind == 0 ? "Normal" : "Light", i + 1)).string();
-                FMOD::Sound* sound = nullptr;
-                if (engine->m_system->createSound(path.c_str(), FMOD_DEFAULT, nullptr, &sound) == FMOD_OK) {
-                    s_tapSounds[kind][i] = sound;
-                }
+        struct Found { int kind; int number; std::filesystem::path path; };
+        std::vector<Found> found;
+        std::error_code ec;
+        for (auto const& entry : std::filesystem::directory_iterator(Mod::get()->getResourcesDir(), ec)) {
+            std::error_code ec2;
+            if (!entry.is_regular_file(ec2)) continue;
+            int number = 0;
+            const int kind = parseTapFileName(entry.path().filename().string(), number);
+            if (kind >= 0) found.push_back({kind, number, entry.path()});
+        }
+        std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) {
+            return a.kind != b.kind ? a.kind < b.kind : a.number < b.number;
+        });
+
+        const bool normalize = Mod::get()->getSettingValue<bool>("tap-normalize");
+        for (auto const& f : found) {
+            FMOD::Sound* sound = nullptr;
+            if (engine->m_system->createSound(f.path.string().c_str(), FMOD_DEFAULT, nullptr, &sound) != FMOD_OK || !sound) continue;
+
+            TapSound ts;
+            ts.sound = sound;
+            ts.hash = hashFile(f.path);
+            if (normalize) {
+                // Quiet files are boosted so every sound peaks at about the same level.
+                const float peak = measurePeak(sound);
+                if (peak > 0.0005f) ts.gain = std::clamp(0.9f / peak, 0.25f, 100.f);
             }
+            s_tapSounds[f.kind].push_back(ts);
         }
     }
 
-    // Plays one of the 6 variants (never the same one twice in a row).
+    // Picks the next sound: shuffle-bag order, never the same file (or an identical copy)
+    // twice in a row. Returns -1 if there are no sounds of this kind.
+    int pickTapSound(int kind) {
+        auto const& list = s_tapSounds[kind];
+        const int n = static_cast<int>(list.size());
+        if (n == 0) return -1;
+        if (n == 1) return 0;
+
+        auto& bag = s_tapBags[kind];
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (bag.pos >= bag.order.size() || static_cast<int>(bag.order.size()) != n) {
+                bag.order.resize(n);
+                for (int i = 0; i < n; ++i) bag.order[i] = i;
+                std::shuffle(bag.order.begin(), bag.order.end(), s_tapRng);
+                bag.pos = 0;
+            }
+            while (bag.pos < bag.order.size()) {
+                const int idx = bag.order[bag.pos++];
+                if (idx == bag.lastIndex) continue;
+                if (bag.lastHash != 0 && list[idx].hash == bag.lastHash) continue;   // identical copy
+                bag.lastIndex = idx;
+                bag.lastHash = list[idx].hash;
+                return idx;
+            }
+        }
+        // Everything left was a repeat (e.g. only identical copies exist): just play one.
+        const int idx = static_cast<int>(s_tapRng() % static_cast<unsigned>(n));
+        bag.lastIndex = idx;
+        bag.lastHash = list[idx].hash;
+        return idx;
+    }
+
     void playTapSound(bool light) {
         auto mod = Mod::get();
         if (!mod->getSettingValue<bool>("enabled") || !mod->getSettingValue<bool>("tap-sounds")) return;
@@ -506,22 +648,17 @@ namespace {
         if (!engine || !engine->m_system) return;
 
         const int kind = light ? 1 : 0;
-        int idx = std::rand() % 6;
-        if (idx == s_lastTapIndex[kind]) idx = (idx + 1 + std::rand() % 5) % 6;
+        const int idx = pickTapSound(kind);
+        if (idx < 0) return;
+        auto const& ts = s_tapSounds[kind][idx];
 
-        FMOD::Sound* sound = s_tapSounds[kind][idx];
-        if (!sound) {   // that file failed to load: use any variant that did
-            for (int i = 0; i < 6 && !sound; ++i) {
-                if (s_tapSounds[kind][i]) { sound = s_tapSounds[kind][i]; idx = i; }
-            }
-            if (!sound) return;
-        }
-        s_lastTapIndex[kind] = idx;
+        float volume = static_cast<float>(mod->getSettingValue<int64_t>("tap-volume")) / 100.f;
+        if (light) volume *= static_cast<float>(mod->getSettingValue<int64_t>("light-volume")) / 100.f;
+        volume *= ts.gain;
 
-        const float volume = std::clamp(static_cast<float>(mod->getSettingValue<int64_t>("tap-volume")) / 100.f, 0.f, 1.f);
         FMOD::Channel* channel = nullptr;
-        if (engine->m_system->playSound(sound, nullptr, true, &channel) == FMOD_OK && channel) {
-            channel->setVolume(volume);
+        if (engine->m_system->playSound(ts.sound, nullptr, true, &channel) == FMOD_OK && channel) {
+            channel->setVolume(std::max(0.f, volume));   // above 1.0 = louder than the file
             channel->setPaused(false);
         }
     }
