@@ -125,11 +125,28 @@
     },
     "tap-volume": {
       "name": "Tap sound volume (%)",
-      "description": "Volume of the tap sounds.",
+      "description": "Overall volume of the tap sounds. Sounds are loudness-matched automatically, so 100 is already loud; go up to 300 for extra.",
       "type": "int",
-      "default": 80,
+      "default": 100,
       "min": 0,
-      "max": 100,
+      "max": 300,
+      "control": {
+        "slider": true
+      }
+    },
+    "tap-normalize": {
+      "name": "Match loudness of sounds",
+      "description": "Automatically boosts quiet sound files so every Normal and Light sound peaks at about the same level. Turn off to play the files exactly as they are.",
+      "type": "bool",
+      "default": true
+    },
+    "light-volume": {
+      "name": "Light sound loudness (%)",
+      "description": "How loud the Light sounds are compared to the Normal sounds.",
+      "type": "int",
+      "default": 70,
+      "min": 0,
+      "max": 200,
       "control": {
         "slider": true
       }
@@ -247,6 +264,60 @@
     "sway": {
       "name": "Sway",
       "description": "The held dot slowly drifts around in all directions by up to this many points. 0 keeps it still.",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 40,
+      "control": {
+        "slider": true
+      }
+    },
+    "left-section": {
+      "name": "Left Dot (alternate clicking / Player 1)",
+      "type": "title"
+    },
+    "left-mirror": {
+      "name": "Mirror left dot",
+      "description": "ON: the left dot is just the right dot flipped to the other side (old behaviour). OFF: the left dot uses its own settings below.",
+      "type": "bool",
+      "default": false
+    },
+    "left-x-position": {
+      "name": "Left X Position (%)",
+      "description": "Horizontal position of the left dot: 0 is left, 100 is right.",
+      "type": "int",
+      "default": 22,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "left-y-position": {
+      "name": "Left Y Position (%)",
+      "description": "Vertical position of the left dot: 0 is bottom, 100 is top.",
+      "type": "int",
+      "default": 38,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "left-shakiness": {
+      "name": "Left Shakiness",
+      "description": "Random offset of the left dot on each click, in points.",
+      "type": "int",
+      "default": 7,
+      "min": 0,
+      "max": 80,
+      "control": {
+        "slider": true
+      }
+    },
+    "left-sway": {
+      "name": "Left Sway",
+      "description": "How far the held left dot slowly drifts, in points. 0 keeps it still.",
       "type": "int",
       "default": 0,
       "min": 0,
