@@ -113,6 +113,51 @@
       "type": "bool",
       "default": true
     },
+    "sound-section": {
+      "name": "Tap Sounds",
+      "type": "title"
+    },
+    "tap-sounds": {
+      "name": "Tap sounds",
+      "description": "Plays a tap sound together with the jump dot (6 Normal + 6 Light sounds, picked at random).",
+      "type": "bool",
+      "default": true
+    },
+    "tap-volume": {
+      "name": "Tap sound volume (%)",
+      "description": "Volume of the tap sounds.",
+      "type": "int",
+      "default": 80,
+      "min": 0,
+      "max": 100,
+      "control": {
+        "slider": true
+      }
+    },
+    "light-on-alternate": {
+      "name": "Light sound on alternate clicking",
+      "description": "While alternate clicking is active, the Light tap sounds play instead of the Normal ones.",
+      "type": "bool",
+      "default": true
+    },
+    "light-own-cps": {
+      "name": "Light sound by its own CPS",
+      "description": "Also play the Light sounds whenever your clicking reaches the CPS below (measured by hold duration + air time, like alternate clicking), even with alternate clicking off.",
+      "type": "bool",
+      "default": true
+    },
+    "light-cps": {
+      "name": "Light sound CPS",
+      "description": "Type the CPS (2-16) at which the Light sounds start playing.",
+      "type": "int",
+      "default": 8,
+      "min": 2,
+      "max": 16,
+      "control": {
+        "input": true,
+        "slider": false
+      }
+    },
     "frame-perfect": {
       "name": "Frame-Perfect Mode",
       "description": "Dot appears and disappears on the exact frame of the jump press/release, with no animation. Turn off to use the Release Fade below.",
@@ -210,5 +255,10 @@
         "slider": true
       }
     }
+  },
+  "resources": {
+    "files": [
+      "resources/*.mp3"
+    ]
   }
 }
