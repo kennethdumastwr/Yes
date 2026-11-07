@@ -488,13 +488,13 @@ namespace {
     }
 
     // ---------- Tap sounds ----------
-    // Every file in the mod's resources folder named  Normal<number>.mp3  or
-    // Light<number>.mp3  is picked up automatically (any amount, any numbers), so you can
+    // Every file in the mod's resources folder named  Normal<number>  or  Light<number>
+    // (.mp3, .ogg or .wav) is picked up automatically (any amount, any numbers), so you can
     // add or delete files freely. They are loaded once, loudness-matched, and played
     // straight through FMOD for the lowest latency.
     struct TapSound {
         FMOD::Sound* sound = nullptr;
-        float gain = 1.f;          // loudness-matching gain for this file
+        float peak = 0.f;          // loudest sample of the file, 0..1 (0 = unknown)
         uint64_t hash = 0;         // content hash: identical files count as "the same sound"
     };
     struct TapBag {                // shuffle-bag: every sound plays once before any repeats
@@ -507,6 +507,7 @@ namespace {
     std::vector<TapSound> s_tapSounds[2];   // [0] = Normal, [1] = Light
     TapBag s_tapBags[2];
     bool s_tapSoundsTried = false;
+    float s_tapGlobalPeak = 0.f;           // loudest sample of ALL loaded files
     std::mt19937 s_tapRng{std::random_device{}()};
 
     // Highest sample level of a decoded sound, 0..1 (0 if it cannot be read).
@@ -553,11 +554,13 @@ namespace {
         return h;
     }
 
-    // "Normal12.mp3" -> kind 0, number 12.  "Light3.MP3" -> kind 1, number 3.  Else -1.
+    // "Normal12.mp3" / "Light3.ogg" -> kind 0 / 1 and the number.  Anything else -> -1.
     int parseTapFileName(const std::string& fileName, int& number) {
         std::string lower;
         for (char ch : fileName) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        if (lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".mp3") != 0) return -1;
+        if (lower.size() < 5) return -1;
+        const std::string ext = lower.substr(lower.size() - 4);
+        if (ext != ".mp3" && ext != ".ogg" && ext != ".wav") return -1;
         const std::string stem = lower.substr(0, lower.size() - 4);
 
         int kind = -1;
@@ -590,7 +593,6 @@ namespace {
             return a.kind != b.kind ? a.kind < b.kind : a.number < b.number;
         });
 
-        const bool normalize = Mod::get()->getSettingValue<bool>("tap-normalize");
         for (auto const& f : found) {
             FMOD::Sound* sound = nullptr;
             if (engine->m_system->createSound(f.path.string().c_str(), FMOD_DEFAULT, nullptr, &sound) != FMOD_OK || !sound) continue;
@@ -598,11 +600,8 @@ namespace {
             TapSound ts;
             ts.sound = sound;
             ts.hash = hashFile(f.path);
-            if (normalize) {
-                // Quiet files are boosted so every sound peaks at about the same level.
-                const float peak = measurePeak(sound);
-                if (peak > 0.0005f) ts.gain = std::clamp(0.9f / peak, 0.25f, 100.f);
-            }
+            ts.peak = measurePeak(sound);
+            s_tapGlobalPeak = std::max(s_tapGlobalPeak, ts.peak);
             s_tapSounds[f.kind].push_back(ts);
         }
     }
@@ -654,7 +653,30 @@ namespace {
 
         float volume = static_cast<float>(mod->getSettingValue<int64_t>("tap-volume")) / 100.f;
         if (light) volume *= static_cast<float>(mod->getSettingValue<int64_t>("light-volume")) / 100.f;
-        volume *= ts.gain;
+
+        // Loudness mode (changes apply instantly):
+        //  "Off"                  - play the files exactly as they are.
+        //  "Keep original balance" - ONE shared boost for every file, so Light stays as much
+        //                           quieter than Normal as the files really are (default).
+        //  "Match every file"     - boost each file to the same level (Light then loses its
+        //                           "light" character and quiet files get noisy).
+        const std::string mode = mod->getSettingValue<std::string>("tap-loudness-mode");
+        if (mode == "Keep original balance") {
+            if (s_tapGlobalPeak > 0.0005f) volume *= std::clamp(0.9f / s_tapGlobalPeak, 0.25f, 20.f);
+        } else if (mode == "Match every file") {
+            if (ts.peak > 0.0005f) volume *= std::clamp(0.9f / ts.peak, 0.25f, 100.f);
+        }
+
+        // Volume inconsistency: every tap gets a random volume between min% and max%.
+        float varMin = static_cast<float>(mod->getSettingValue<int64_t>("tap-var-min"));
+        float varMax = static_cast<float>(mod->getSettingValue<int64_t>("tap-var-max"));
+        if (varMax < varMin) std::swap(varMin, varMax);
+        if (varMax > varMin) {
+            std::uniform_real_distribution<float> dist(varMin, varMax);
+            volume *= std::max(0.f, 1.f + dist(s_tapRng) / 100.f);
+        } else {
+            volume *= std::max(0.f, 1.f + varMin / 100.f);
+        }
 
         FMOD::Channel* channel = nullptr;
         if (engine->m_system->playSound(ts.sound, nullptr, true, &channel) == FMOD_OK && channel) {
